@@ -2,10 +2,10 @@
 
 This repository aims to extract the core implementation of the Clay erasure coding scheme from the original Ceph codebase. The Clay scheme is designed for efficient data storage and recovery in distributed systems, particularly in scenarios involving multiple layers of data redundancy.
 
-> [!Important] 
-> Work in progress. Contributions are welcome!
-
 The goal is to create a standalone library that can be easily integrated into other projects, providing a robust and flexible solution for data protection.
+
+> [!Important] 
+> Work in progress. Contributions are welcome! Currently runs a test, not actually a library yet.
 
 ## Original Work
 
@@ -36,7 +36,7 @@ brew install autoconf
 brew install libtool
 ```
 
-### Building GF-Complete
+### Building Dependencies
 
 To build gf-complete, navigate to the `deps/gf-complete` directory and run the following commands:
 
@@ -56,4 +56,12 @@ cd deps/gf-complete
 ./configure
 make
 sudo make install
+```
+
+## Building the Project
+
+To build the Clay project, navigate to the root directory of the repository and run the following commands:
+
+```bash
+make
 ```
