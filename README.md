@@ -20,3 +20,40 @@ https://github.com/ceph/ceph/tree/main/src/erasure-code/clay
 
 Please see the original repository for the LICENSE file.
 
+## Installing Dependencies
+
+To build and run the code, you will need to install the following dependencies:
+- Jerasure (version 2)
+- GF-Complete (version 2)
+
+For now, you can find the deps inside the `deps` directory. Follow the instructions in their respective README files to build and install them.
+
+You'll need a few things on your machine, for example, on macOS:
+
+```bash
+brew install automake
+brew install autoconf
+brew install libtool
+```
+
+### Building GF-Complete
+
+To build gf-complete, navigate to the `deps/gf-complete` directory and run the following commands:
+
+```bash
+cd deps/gf-complete
+./autogen.sh
+./configure
+make
+sudo make install
+```
+
+To build jerasure, navigate to the `deps/jerasure` directory and run the following commands:
+
+```bash
+cd deps/gf-complete
+./autogen.sh
+./configure
+make
+sudo make install
+```
