@@ -22,7 +22,7 @@ using std::set;
 int ErasureCodeJerasure::init(ErasureCodeProfile& profile, ostream *ss)
 {
   int err = 0;
-  std::cout << "technique=" << technique ;
+  std::cout << "technique=" << technique << std::endl;
   profile["technique"] = technique;
   err |= parse(profile, ss);
   if (err)
