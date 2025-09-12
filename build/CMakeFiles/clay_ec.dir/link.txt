@@ -1,0 +1,2 @@
+/usr/bin/ar qc libclay_ec.a CMakeFiles/clay_ec.dir/src/ErasureCode.cc.o CMakeFiles/clay_ec.dir/src/ErasureCodeClay.cc.o CMakeFiles/clay_ec.dir/src/ErasureCodeJerasure.cc.o
+/usr/bin/ranlib libclay_ec.a

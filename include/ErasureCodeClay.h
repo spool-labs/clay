@@ -61,7 +61,9 @@ private:
                               std::vector<std::pair<int, int>> &repair_sub_chunks_ind);
     void get_repair_subchunks(const int &lost_node,
                               std::vector<std::pair<int, int>> &repair_sub_chunks_ind);
+public:
     int get_repair_sub_chunk_count(const std::set<int> &want_to_read);
+private:
     int decode_erasures(const std::set<int> &erased_chunks, int z,
                         std::map<int, BufferList> *chunks, int sc_size);
     int decode_uncoupled(const std::set<int> &erasures, int z, int ss_size);
