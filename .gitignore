@@ -10,8 +10,7 @@ bin/
 *.obj
 *.exe
 
-# Dependency build directories and generated files
-deps/jerasure/install/
+# Generated files from the build process
 deps/jerasure/autom4te.cache/
 deps/jerasure/config.log
 deps/jerasure/config.status
@@ -19,22 +18,11 @@ deps/jerasure/libtool
 deps/jerasure/config.h
 deps/jerasure/stamp-h1
 deps/jerasure/config.h.in~
-deps/jerasure/config.sub
-deps/jerasure/config.guess
-deps/jerasure/missing
-deps/jerasure/depcomp
-deps/jerasure/install-sh
-deps/jerasure/ltmain.sh
-deps/jerasure/aclocal.m4
-deps/jerasure/configure
-deps/jerasure/Makefile
-deps/jerasure/Makefile.in
 deps/jerasure/src/.deps/
 deps/jerasure/src/.libs/
 deps/jerasure/Examples/.deps/
 deps/jerasure/Examples/.libs/
 
-deps/gf-complete/install/
 deps/gf-complete/autom4te.cache/
 deps/gf-complete/config.log
 deps/gf-complete/config.status
@@ -42,16 +30,6 @@ deps/gf-complete/libtool
 deps/gf-complete/config.h
 deps/gf-complete/stamp-h1
 deps/gf-complete/config.h.in~
-deps/gf-complete/config.sub
-deps/gf-complete/config.guess
-deps/gf-complete/missing
-deps/gf-complete/depcomp
-deps/gf-complete/install-sh
-deps/gf-complete/ltmain.sh
-deps/gf-complete/aclocal.m4
-deps/gf-complete/configure
-deps/gf-complete/Makefile
-deps/gf-complete/Makefile.in
 deps/gf-complete/src/.libs/
 deps/gf-complete/src/neon/.libs/
 deps/gf-complete/tools/.libs/
