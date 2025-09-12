@@ -3,7 +3,7 @@
 This repository aims to extract the core implementation of the Clay erasure coding scheme from the original Ceph codebase. The Clay scheme is designed for efficient data storage and recovery in distributed systems, particularly in scenarios involving multiple layers of data redundancy.
 
 > [!Important] 
-> This code does not yet work but is a work in progress. Contributions are welcome!
+> Work in progress. Contributions are welcome!
 
 The goal is to create a standalone library that can be easily integrated into other projects, providing a robust and flexible solution for data protection.
 
