@@ -1,0 +1,11 @@
+prefix=/usr/local
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: Clay Erasure Code
+Description: Standalone Clay erasure coding library extracted from Ceph
+Version: 1.0.0
+Requires: 
+Libs: -L${libdir} -lclay_ec -lJerasure -lgf_complete
+Cflags: -I${includedir}/clay

@@ -1,6 +1,6 @@
 CC = g++
-CFLAGS = -std=c++17 -Wall -O2 -I./include -I./deps/jerasure/include -I./deps/gf-complete/install/include
-LDFLAGS = -L./deps/jerasure/install/lib -L./deps/gf-complete/install/lib -ljerasure -lgf_complete
+CFLAGS = -std=c++17 -Wall -O2 -I./include -I./deps/jerasure/include -I./deps/jerasure/install/include -I./deps/gf-complete/install/include
+LDFLAGS = -L./deps/jerasure/install/lib -L./deps/gf-complete/install/lib -lJerasure -lgf_complete
 OBJECTS = src/ErasureCode.o src/ErasureCodeJerasure.o src/ErasureCodeClay.o src/main.o
 EXECUTABLE = clay_ec
 

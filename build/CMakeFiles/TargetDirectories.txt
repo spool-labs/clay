@@ -1,0 +1,9 @@
+/home/divij/clay/build/CMakeFiles/clay_ec.dir
+/home/divij/clay/build/CMakeFiles/clay_test.dir
+/home/divij/clay/build/CMakeFiles/test.dir
+/home/divij/clay/build/CMakeFiles/edit_cache.dir
+/home/divij/clay/build/CMakeFiles/rebuild_cache.dir
+/home/divij/clay/build/CMakeFiles/list_install_components.dir
+/home/divij/clay/build/CMakeFiles/install.dir
+/home/divij/clay/build/CMakeFiles/install/local.dir
+/home/divij/clay/build/CMakeFiles/install/strip.dir
