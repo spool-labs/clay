@@ -139,8 +139,9 @@ int main() {
     BufferList reconstructed;
     size_t total_size = 0;
     for (int i = 0; i < clay.k; ++i) {
+        size_t chunk_size = decoded_data[i].length();  // Get size before moving
         reconstructed.claim_append(decoded_data[i]);  // Appends and clears source
-        total_size += decoded_data[i].length();
+        total_size += chunk_size;
     }
     std::cout << "Reconstructed data size: " << total_size << " bytes" << std::endl;
 

@@ -18,8 +18,8 @@
 
 3. **Run the test:**
    ```bash
-   export LD_LIBRARY_PATH=../deps/jerasure/install/lib:../deps/gf-complete/install/lib:$LD_LIBRARY_PATH
-   ./clay_test
+   export LD_LIBRARY_PATH=./deps/jerasure/install/lib:./deps/gf-complete/install/lib:$LD_LIBRARY_PATH
+   ./clay_ec
    ```
 
 ### Basic Usage
