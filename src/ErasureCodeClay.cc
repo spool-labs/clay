@@ -12,9 +12,6 @@
 
 using namespace std;
 
-inline unsigned round_up_to(unsigned value, unsigned alignment) {
-    return (value + alignment - 1) / alignment * alignment;
-}
 
 static int pow_int(int a, int x) {
   int power = 1;
@@ -96,10 +93,21 @@ int ErasureCodeClay::decode(const set<int> &want_to_read,
 			    const map<int, bufferlist> &chunks,
 			    map<int, bufferlist> *decoded, int chunk_size)
 {
+
+  set<int> available;
+  for (const auto& chunk_pair : chunks) {
+    available.insert(chunk_pair.first);
+  }
+
+  map<int, vector<pair<int, int>>> minimum_required;
+  int validation_result = minimum_to_decode(want_to_read, available, &minimum_required);
+  if (validation_result != 0) {
+    return validation_result; 
+  }
+
   set<int> avail;
-  for ([[maybe_unused]] auto& [node, bl] : chunks) {
-    avail.insert(node);
-    (void)bl;  // silence -Wunused-variable
+  for (const auto& chunk_pair : chunks) {
+    avail.insert(chunk_pair.first);
   }
 
   if (is_repair(want_to_read, avail) && 
@@ -458,7 +466,7 @@ int ErasureCodeClay::repair(const set<int> &want_to_read,
 
   for (int i =  0; i < k + m; i++) {
     // included helper data only for d+nu nodes.
-    if (auto found = chunks.find(i); found != chunks.end()) { // i is a helper
+    auto found = chunks.find(i); if (found != chunks.end()) { // i is a helper
       if (i<k) {
 	helper_data[i] = found->second;
       } else {
@@ -519,14 +527,17 @@ int ErasureCodeClay::repair_one_lost_chunk(map<int, bufferlist> &recovered_data,
   bufferlist temp_buf;
   temp_buf.push_back(buf);
 
-  for (auto [index,count] : repair_sub_chunks_ind) {
-    for (int j = index; j < index + count; j++) {
+   for (const auto& pair : repair_sub_chunks_ind) {
+     int pair_index = pair.first;
+     int pair_count = pair.second;
+     for (int j = pair_index; j < pair_index + pair_count; j++) {
       get_plane_vector(j, z_vec);
       int order = 0;
       // check across all erasures and aloof nodes
-      for ([[maybe_unused]] auto& [node, bl] : recovered_data) {
+      for (const auto& node_bl_pair : recovered_data) {
+        int node = node_bl_pair.first;
         if (node % q == z_vec[node / q]) order++;
-        (void)bl;  // silence -Wunused-variable
+        
       }
       for (auto node : aloof_nodes) {
         if (node % q == z_vec[node / q]) order++;
@@ -550,10 +561,11 @@ int ErasureCodeClay::repair_one_lost_chunk(map<int, bufferlist> &recovered_data,
 
   int lost_chunk = 0;
   int count = 0;
-  for ([[maybe_unused]] auto& [node, bl] : recovered_data) {
+  for (const auto& node_bl_pair : recovered_data) {
+        int node = node_bl_pair.first;
     lost_chunk = node;
     count++;
-    (void)bl;  // silence -Wunused-variable
+    
   }
   assert(count == 1);
 
@@ -694,9 +706,13 @@ int ErasureCodeClay::decode_layered(set<int> &erased_chunks,
   assert(num_erasures > 0);
 
   for (int i = k+nu; (num_erasures < m) && (i < q*t); i++) {
-    if ([[maybe_unused]] auto [it, added] = erased_chunks.emplace(i); added) {
+    auto result = erased_chunks.emplace(i); if (result.second) {
       num_erasures++;
-      (void)it;  // silence -Wunused-variable
+      auto emplace_result = erased_chunks.emplace(i);
+    if (emplace_result.second) {
+      num_erasures++;
+      (void)result.first; // silence -Wunused-variable
+    }
     }
   }
   assert(num_erasures == m);

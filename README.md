@@ -4,25 +4,26 @@ This repository aims to extract the core implementation of the Clay erasure codi
 
 The goal is to create a standalone library that can be easily integrated into other projects, providing a robust and flexible solution for data protection.
 
-> [!Important] 
+> [!Important]
 > Work in progress. Contributions are welcome!
 
 ## Original Work
 
 The original paper can be found here:
-https://www.usenix.org/system/files/conference/fast18/fast18-vajha.pdf
+<https://www.usenix.org/system/files/conference/fast18/fast18-vajha.pdf>
 
 The documentation for the Clay plugin in Ceph can be found here:
-https://docs.ceph.com/en/reef/rados/operations/erasure-code-clay/
+<https://docs.ceph.com/en/reef/rados/operations/erasure-code-clay/>
 
 The original source (as part of Ceph) can be found here:
-https://github.com/ceph/ceph/tree/main/src/erasure-code/clay
+<https://github.com/ceph/ceph/tree/main/src/erasure-code/clay>
 
 Please see the original repository for the LICENSE file.
 
 ## Installing Dependencies
 
 To build and run the code, you will need to install the following dependencies:
+
 - Jerasure (version 2)
 - GF-Complete (version 2)
 
@@ -92,4 +93,41 @@ Chunk contents at stage: Available Chunks
   Chunk C3: 41 3e 20 ed d6 84 c4 7c a5 55 9e c8 fa 1a 1f b4 f7 f0 50 92 ...
 
 Reconstructed data written to: output_file (175496 bytes)
+```
+
+## Quick Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/spool-labs/clay.git
+cd clay
+
+# Build dependencies (Jerasure and GF-Complete are bundled)
+# No additional setup needed!
+```
+
+## Build and Test
+
+### One-command build and test
+
+```bash
+./build_and_test.sh
+```
+
+**Expected output:**
+
+```bash
+Test Summary
+Tests run: 23
+Tests passed: 23
+Tests failed: 0
+
+ALL TESTS PASSED! Clay is working correctly.
+[SUCCESS] Clay API tests passed
+```
+
+## Run Examples
+
+```bash
+./run_examples.sh
 ```
