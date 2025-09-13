@@ -180,7 +180,9 @@ int encode_mode(ErasureCodeClay& clay, const std::string& input_file, const std:
 
     // Write chunks to files
     fs::create_directories(output_dir);
-    for (const auto& [index, chunk] : encoded) {
+    for (const auto& p : encoded) {
+        int index = p.first;
+        const buffer::list& chunk = p.second;
         if (write_chunk(output_dir, index, chunk) != 0) {
             return 1;
         }

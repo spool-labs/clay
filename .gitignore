@@ -57,3 +57,9 @@ deps/gf-complete/.git/
 *.log
 *.cache
 *.tmp
+
+.vscode
+build
+cmake
+demo_data
+examples_output.log
