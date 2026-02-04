@@ -27,24 +27,22 @@ clay-codes = "0.1"
 use clay_codes::ClayCode;
 use std::collections::HashMap;
 
-// Create a Clay code: 4 data chunks + 2 parity chunks, 5 helpers for repair
-let clay = ClayCode::new(4, 2, 5).unwrap();
-
-// Encode data into 6 chunks, distributed across nodes
-let data = b"Hello, Clay codes!";
+// 4 data chunks, 2 parity chunks, 5 helpers for repair
+let clay   = ClayCode::new(4, 2, 5).unwrap();
+let data   = b"Hello, Clay codes!";
 let chunks = clay.encode(data);
 
-// Simulate losing node 0
+// Simulate losing node 0 -- collect the surviving chunks
 let mut available: HashMap<usize, Vec<u8>> = HashMap::new();
-for (i, chunk) in chunks.iter().enumerate() {
-    if i != 0 {
-        available.insert(i, chunk.clone());
+for (node, chunk) in chunks.iter().enumerate() {
+    if node != 0 {
+        available.insert(node, chunk.clone());
     }
 }
 
-// Recover the original data
-let decoded = clay.decode(&available, &[0]).unwrap();
-assert_eq!(&decoded[..data.len()], &data[..]);
+// Recover the original data from the remaining 5 chunks
+let recovered = clay.decode(&available, &[0]).unwrap();
+assert_eq!(&recovered[..data.len()], &data[..]);
 ```
 
 ### Bandwidth-Optimal Repair
@@ -55,30 +53,31 @@ This is the core advantage over Reed-Solomon. Rather than downloading full chunk
 use clay_codes::ClayCode;
 use std::collections::HashMap;
 
-let clay = ClayCode::new(4, 2, 5).unwrap();
-let data = b"Hello, Clay codes!";
-let chunks = clay.encode(data);
-let chunk_size = chunks[0].len();
+let clay           = ClayCode::new(4, 2, 5).unwrap();
+let data           = b"Hello, Clay codes!";
+let chunks         = clay.encode(data);
+let chunk_size     = chunks[0].len();
 let sub_chunk_size = chunk_size / clay.sub_chunk_no;
 
-// Ask which sub-chunks are needed to repair node 0
-let available_nodes: Vec<usize> = (1..6).collect();
-let helper_info = clay.minimum_to_repair(0, &available_nodes).unwrap();
+// Which sub-chunks do we need from each helper to repair node 0?
+let helpers    = vec![1, 2, 3, 4, 5];
+let repair_map = clay.minimum_to_repair(0, &helpers).unwrap();
 
-// Fetch only the required sub-chunks from each helper
-let mut partial_data: HashMap<usize, Vec<u8>> = HashMap::new();
-for (helper_idx, sub_chunk_indices) in &helper_info {
-    let mut helper_partial = Vec::new();
-    for &sc_idx in sub_chunk_indices {
-        let start = sc_idx * sub_chunk_size;
-        let end = (sc_idx + 1) * sub_chunk_size;
-        helper_partial.extend_from_slice(&chunks[*helper_idx][start..end]);
+// Fetch only those sub-chunks from each helper node
+let mut partial: HashMap<usize, Vec<u8>> = HashMap::new();
+
+for (helper, sub_chunks) in &repair_map {
+    let mut buf = Vec::new();
+    for &sc in sub_chunks {
+        let start = sc * sub_chunk_size;
+        let end   = start + sub_chunk_size;
+        buf.extend_from_slice(&chunks[*helper][start..end]);
     }
-    partial_data.insert(*helper_idx, helper_partial);
+    partial.insert(*helper, buf);
 }
 
-// Reconstruct the lost node from partial data
-let recovered = clay.repair(0, &partial_data, chunk_size).unwrap();
+// Reconstruct node 0 from the partial data
+let recovered = clay.repair(0, &partial, chunk_size).unwrap();
 assert_eq!(recovered, chunks[0]);
 ```
 
