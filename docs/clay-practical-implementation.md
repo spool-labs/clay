@@ -291,10 +291,7 @@ Pattern: [4 on, 12 off] repeating, with larger gaps at q² and q³ boundaries
 ```
 For any failed node:
 - β = 64 sub-chunks needed (25% of total)
-- Sub-chunks appear in groups of q⁰ = 1 contiguous indices
-- Wait, let me recalculate...
-
-Actually, the contiguity depends on which y-section:
+- Contiguity of the needed sub-chunks depends on which y-section:
 
 y = 0: z₀ = x  →  groups of 1, spaced by 4    (least contiguous)
 y = 1: z₁ = x  →  groups of 4, spaced by 16
@@ -539,57 +536,9 @@ For repair of node (x=2, y=1):
   - This is ONE contiguous read within the group!
 ```
 
-**Wait, there's a subtlety here.** Let me reconsider. When we repair a node at (x, y), we need sub-chunks from ALL helpers where z_y = x. So from each helper, we need the same set of layer indices. The grouping should make accessing those layers contiguous.
+All helpers contribute sub-chunks from the same set of layer indices, determined by the failed node's y-section. Storing by y-group means each helper's repair data is a single contiguous read of the entire group, rather than scattered sub-chunk lookups.
 
-Let me refine:
-
-```
-REFINED GROUP STRUCTURE
-═══════════════════════
-
-For y_group = y, store all layers sorted by z_y first, then by z:
-
-Within group y:
-  Offset for layer z = position_in_group(z, y) × subchunk_size
-
-  where position_in_group(z, y) considers z_y as primary sort key
-
-When repairing node (x, y):
-  - From each helper: read y_group = y
-  - Extract: x × (β/q) sub-chunks at offset x × (β/q) × subchunk_size
-  - Length: (β/q) × subchunk_size = (q^(t-1) / q) × ss = q^(t-2) × ss
-
-  Wait, that's not quite right either. Let me reconsider...
-```
-
-Actually, the correct approach for Option C is simpler:
-
-```
-CORRECTED OPTION C: REPAIR-ALIGNED GROUPS
-═════════════════════════════════════════
-
-For each y-section y, store β sub-chunks per x value:
-
-chunk_groups table:
-  (file_id, stripe_idx, node_id, y, x) → BLOB of (β/q) sub-chunks
-
-But that's essentially t×q = n groups, back to high overhead.
-
-BETTER APPROACH: Single group per y, indexed by x within
-
-chunk_groups table:
-  (file_id, stripe_idx, node_id, y) → BLOB of β sub-chunks
-
-Internal layout: sorted so that sub-chunks for each x are contiguous
-
-During repair of node (x_failed, y_failed):
-  - y_section = y_failed
-  - For each helper node:
-      group_data = db.get(file_id, stripe_idx, helper_node_id, y_section)
-      # The entire group_data is what we need! Single contiguous read.
-```
-
-**Key Insight:** All helpers contribute sub-chunks from the SAME set of layer indices (determined by the failed node's y-section). So storing by y_group means:
+So storing by y_group means:
 - 1 contiguous read per helper during repair
 - t = 4 blobs per chunk instead of 256
 

@@ -2,8 +2,15 @@
 name = "clay-codes"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.65"
 description = "Clay (Coupled-Layer) erasure codes - MSR codes with optimal repair bandwidth"
-license = "MIT"
+license = "Apache-2.0"
+repository = "https://github.com/spool-labs/clay"
+homepage = "https://github.com/spool-labs/clay"
+documentation = "https://docs.rs/clay-codes"
+readme = "README.md"
+keywords = ["erasure-codes", "msr", "repair", "distributed-storage", "reed-solomon"]
+categories = ["algorithms", "encoding"]
 
 [dependencies]
 reed-solomon-erasure = { version = "6.0", features = ["simd-accel"] }
