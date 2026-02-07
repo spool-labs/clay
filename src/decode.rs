@@ -33,8 +33,13 @@ pub fn decode(
     available: &HashMap<usize, Vec<u8>>,
     erasures: &[usize],
 ) -> Result<Vec<u8>, ClayError> {
-    if available.is_empty() {
+    if available.is_empty() && erasures.is_empty() {
         return Ok(Vec::new());
+    }
+    if available.is_empty() {
+        return Err(ClayError::InvalidParameters(
+            "No available chunks provided but erasures are non-empty".into(),
+        ));
     }
 
     // Validate erasure count
@@ -159,13 +164,20 @@ pub fn decode(
 ///
 /// Processes layers in order of increasing intersection score, applying
 /// PRT/PFT transforms and RS decoding as needed.
-pub fn decode_layered(
+pub(crate) fn decode_layered(
     params: &DecodeParams,
     erased_chunks: &BTreeSet<usize>,
     chunks: &mut Vec<Vec<u8>>,
     sub_chunk_size: usize,
 ) -> Result<(), ClayError> {
     let total_nodes = params.q * params.t;
+
+    // Create RS codec once for all layers
+    let rs = reed_solomon_erasure::ReedSolomon::<galois_8::Field>::new(
+        params.original_count,
+        params.recovery_count,
+    )
+    .map_err(|e| ClayError::ReconstructionFailed(format!("RS init failed: {:?}", e)))?;
 
     // Initialize U buffers
     let chunk_size = chunks[0].len();
@@ -193,6 +205,7 @@ pub fn decode_layered(
                     &mut u_buf,
                     &mut u_computed,
                     sub_chunk_size,
+                    &rs,
                 )?;
             }
         }
@@ -252,6 +265,7 @@ fn decode_layered_with_tracking(
     u_buf: &mut [Vec<u8>],
     u_computed: &mut [Vec<bool>],
     sub_chunk_size: usize,
+    rs: &reed_solomon_erasure::ReedSolomon<galois_8::Field>,
 ) -> Result<(), ClayError> {
     let z_vec = get_plane_vector(z, params.t, params.q);
 
@@ -304,7 +318,7 @@ fn decode_layered_with_tracking(
     }
 
     // Decode uncoupled layer using MDS
-    decode_uncoupled_layer(params, &needs_mds, z, sub_chunk_size, u_buf)?;
+    decode_uncoupled_layer(params, &needs_mds, z, sub_chunk_size, u_buf, rs)?;
 
     // Mark reconstructed nodes as computed
     for &node in &needs_mds {
@@ -315,12 +329,13 @@ fn decode_layered_with_tracking(
 }
 
 /// Decode uncoupled layer using RS MDS code
-pub fn decode_uncoupled_layer(
+pub(crate) fn decode_uncoupled_layer(
     params: &DecodeParams,
     erased_chunks: &BTreeSet<usize>,
     z: usize,
     sub_chunk_size: usize,
     u_buf: &mut [Vec<u8>],
+    rs: &reed_solomon_erasure::ReedSolomon<galois_8::Field>,
 ) -> Result<(), ClayError> {
     let total_nodes = params.q * params.t;
     let offset = z * sub_chunk_size;
@@ -342,13 +357,6 @@ pub fn decode_uncoupled_layer(
     // Check if we have erased originals or parities
     let has_erased_originals = erased_chunks.iter().any(|&i| i < parity_start);
     let has_erased_parities = erased_chunks.iter().any(|&i| i >= parity_start);
-
-    // Create RS codec for this layer
-    let rs = reed_solomon_erasure::ReedSolomon::<galois_8::Field>::new(
-        params.original_count,
-        params.recovery_count,
-    )
-    .map_err(|e| ClayError::ReconstructionFailed(format!("Layer {} RS init failed: {:?}", z, e)))?;
 
     if has_erased_originals {
         // Build shards as Option<Vec<u8>> for reconstruction
@@ -402,7 +410,7 @@ pub fn decode_uncoupled_layer(
 /// Get companion layer index with proper modular arithmetic
 ///
 /// z_sw = (z + (x - z_y) * q^(t-1-y)) mod α
-pub fn get_companion_layer(params: &DecodeParams, z: usize, x: usize, y: usize, z_y: usize) -> usize {
+pub(crate) fn get_companion_layer(params: &DecodeParams, z: usize, x: usize, y: usize, z_y: usize) -> usize {
     debug_assert!(y < params.t, "y={} must be < t={}", y, params.t);
     debug_assert!(x < params.q, "x={} must be < q={}", x, params.q);
     debug_assert!(z_y < params.q, "z_y={} must be < q={}", z_y, params.q);
@@ -555,7 +563,7 @@ fn get_max_iscore(params: &DecodeParams, erased_chunks: &BTreeSet<usize>) -> usi
 /// Compute C* from C and U (for repair)
 ///
 /// companion_value = (U + C) / γ
-pub fn compute_cstar_from_c_and_u(c_helper: &[u8], u_helper: &[u8]) -> Vec<u8> {
+pub(crate) fn compute_cstar_from_c_and_u(c_helper: &[u8], u_helper: &[u8]) -> Vec<u8> {
     let len = c_helper.len();
     let mut companion_c = vec![0u8; len];
     let gamma_inv = crate::transforms::gf_inv(GAMMA);
@@ -605,6 +613,15 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_decode_empty_both() {
+        let params = test_params();
+        let available: HashMap<usize, Vec<u8>> = HashMap::new();
+        let result = decode(&params, &available, &[]);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
     }
 
     #[test]

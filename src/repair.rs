@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use crate::checked_pow;
 use crate::coords::get_plane_vector;
 use crate::decode::{compute_cstar_from_c_and_u, decode_uncoupled_layer, get_companion_layer, DecodeParams};
 use crate::error::ClayError;
@@ -14,23 +15,6 @@ use crate::transforms::{compute_u_from_c_and_ustar, prt_compute_both_oriented};
 
 /// Parameters needed for repair (alias to DecodeParams)
 pub type RepairParams = DecodeParams;
-
-/// Checked integer power function
-fn checked_pow(base: usize, exp: usize) -> Option<usize> {
-    let mut result: usize = 1;
-    let mut b = base;
-    let mut e = exp;
-    while e > 0 {
-        if e & 1 == 1 {
-            result = result.checked_mul(b)?;
-        }
-        e >>= 1;
-        if e > 0 {
-            b = b.checked_mul(b)?;
-        }
-    }
-    Some(result)
-}
 
 /// Get the list of sub-chunk indices needed for repair
 ///
@@ -219,6 +203,13 @@ pub fn repair(
         }
     }
 
+    // Create RS codec once for all layers
+    let rs = reed_solomon_erasure::ReedSolomon::<reed_solomon_erasure::galois_8::Field>::new(
+        params.original_count,
+        params.recovery_count,
+    )
+    .map_err(|e| ClayError::ReconstructionFailed(format!("RS init failed: {:?}", e)))?;
+
     // Initialize U buffers for all nodes
     let mut u_buf: Vec<Vec<u8>> = vec![vec![0u8; chunk_size]; total_nodes];
 
@@ -229,7 +220,8 @@ pub fn repair(
     let mut recovered = vec![0u8; chunk_size];
 
     // Build helper data map with internal indices and validate sizes
-    let mut helper_internal: HashMap<usize, Vec<u8>> = HashMap::new();
+    // Store references to avoid cloning helper data
+    let mut helper_internal: HashMap<usize, &[u8]> = HashMap::new();
     for (&ext_idx, data) in helper_data.iter() {
         if ext_idx >= params.n {
             return Err(ClayError::InvalidParameters(format!(
@@ -249,7 +241,7 @@ pub fn repair(
                 actual: data.len(),
             });
         }
-        helper_internal.insert(internal, data.clone());
+        helper_internal.insert(internal, data.as_slice());
     }
 
     // Build set of aloof nodes (not helpers and not the lost node)
@@ -262,10 +254,10 @@ pub fn repair(
         }
     }
 
-    // Add shortened nodes as helpers with zero data
+    // Add shortened nodes as helpers with zero data (allocated once)
     let zero_data = vec![0u8; expected_helper_bytes];
     for i in params.k..(params.k + params.nu) {
-        helper_internal.insert(i, zero_data.clone());
+        helper_internal.insert(i, &zero_data);
     }
 
     // Build mapping from layer z to position in helper data
@@ -384,7 +376,7 @@ pub fn repair(
             }
 
             // Phase 2: Decode uncoupled code to recover U for nodes we couldn't compute
-            decode_uncoupled_layer(params, &layer_erasures, z, sub_chunk_size, &mut u_buf)?;
+            decode_uncoupled_layer(params, &layer_erasures, z, sub_chunk_size, &mut u_buf, &rs)?;
             for &node in &layer_erasures {
                 u_computed[node][z] = true;
             }

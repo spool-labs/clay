@@ -141,41 +141,6 @@ pub fn compute_c_from_u_and_cstar(u_xy: &[u8], c_companion: &[u8]) -> Vec<u8> {
     c
 }
 
-/// Compute C* from C and U (partial transform)
-///
-/// Used when we have C at one vertex and U at its companion.
-/// From PRT: U* = γ*C + C*, so C* = U* - γ*C = U* + γ*C
-/// But we have U (not U*) and C, so we use:
-/// U = C + γ*C* and U* = γ*C + C*
-///
-/// If helper is primary (has C), we compute C* from its U* and C:
-/// C* = U* + γ*C (since U* = γ*C + C*)
-pub fn compute_cstar_from_c_and_u(c_helper: &[u8], u_helper: &[u8], helper_is_primary: bool) -> Vec<u8> {
-    let len = c_helper.len();
-    let mut companion_c = vec![0u8; len];
-
-    let gamma_inv = gf_inv(GAMMA);
-
-    if helper_is_primary {
-        // helper has C, u_helper is U* for companion
-        // U* = γ*C + C* => C* = U* + γ*C
-        for i in 0..len {
-            companion_c[i] = gf_add(u_helper[i], gf_mul(GAMMA, c_helper[i]));
-        }
-    } else {
-        // helper has C*, u_helper is U for companion
-        // U = C + γ*C* => C = U + γ*C*
-        // But we want C* given C* (helper) and U... this case shouldn't happen
-        // Actually if helper is not primary, then helper has C*, and we want C
-        // U = C + γ*C* => C = U + γ*C*
-        for i in 0..len {
-            companion_c[i] = gf_mul(gf_add(u_helper[i], c_helper[i]), gamma_inv);
-        }
-    }
-
-    companion_c
-}
-
 /// Compute U from C and U* (partial transform)
 ///
 /// From PFT inverse, given C and U*:
@@ -219,6 +184,30 @@ mod tests {
         // U → C via PFT
         let (c_back, c_star_back) = pft_compute_both(&u, &u_star);
 
+        assert_eq!(c, c_back);
+        assert_eq!(c_star, c_star_back);
+    }
+
+    #[test]
+    fn test_partial_transform_roundtrips() {
+        // Test that compute_c_from_u_and_cstar and compute_u_from_c_and_ustar
+        // are consistent with prt_compute_both / pft_compute_both
+        let c = vec![0x12, 0x34, 0x56, 0x78];
+        let c_star = vec![0xAB, 0xCD, 0xEF, 0x01];
+
+        // Full PRT: (C, C*) -> (U, U*)
+        let (u, u_star) = prt_compute_both(&c, &c_star);
+
+        // Partial: given U and C*, recover C
+        let c_recovered = compute_c_from_u_and_cstar(&u, &c_star);
+        assert_eq!(c, c_recovered, "compute_c_from_u_and_cstar failed");
+
+        // Partial: given C and U*, recover U
+        let u_recovered = compute_u_from_c_and_ustar(&c, &u_star);
+        assert_eq!(u, u_recovered, "compute_u_from_c_and_ustar failed");
+
+        // Also verify with PFT roundtrip
+        let (c_back, c_star_back) = pft_compute_both(&u, &u_star);
         assert_eq!(c, c_back);
         assert_eq!(c_star, c_star_back);
     }

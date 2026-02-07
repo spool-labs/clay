@@ -32,7 +32,6 @@
 //! # Modules
 //!
 //! - [`error`]: Error types for Clay code operations
-//! - [`coords`]: Coordinate system helpers (plane vectors, companion layers)
 //! - [`transforms`]: Pairwise coupling transforms (PRT/PFT)
 //! - [`encode`]: Encoding implementation
 //! - [`decode`]: Decoding and erasure recovery
@@ -40,7 +39,7 @@
 
 use std::collections::HashMap;
 
-pub mod coords;
+pub(crate) mod coords;
 pub mod decode;
 pub mod encode;
 pub mod error;
@@ -49,11 +48,14 @@ pub mod transforms;
 
 pub use error::ClayError;
 
+const MAX_RS_SHARDS: usize = 32768;
+
 use decode::decode as decode_chunks;
 use encode::encode as encode_chunks;
 use repair::{minimum_to_repair as min_repair, repair as repair_chunk};
 
 /// Clay (Coupled-Layer) erasure code
+#[derive(Clone, Debug)]
 pub struct ClayCode {
     /// Number of data chunks
     pub k: usize,
@@ -123,7 +125,7 @@ impl ClayCode {
         // Validate that k+nu+m fits in reed-solomon limits (up to 32768 shards)
         let original_count = k + nu;
         let recovery_count = m;
-        if original_count > 32768 || recovery_count > 32768 {
+        if original_count > MAX_RS_SHARDS || recovery_count > MAX_RS_SHARDS {
             return Err(ClayError::InvalidParameters(
                 "Total nodes exceeds reed-solomon limit of 32768".into(),
             ));
@@ -240,7 +242,7 @@ impl ClayCode {
 }
 
 /// Integer power function with overflow checking
-fn checked_pow(base: usize, exp: usize) -> Option<usize> {
+pub(crate) fn checked_pow(base: usize, exp: usize) -> Option<usize> {
     let mut result: usize = 1;
     let mut b = base;
     let mut e = exp;
@@ -589,6 +591,49 @@ mod tests {
         // d must be in range
         assert!(ClayCode::new(4, 2, 4).is_err()); // d < k+1
         assert!(ClayCode::new(4, 2, 6).is_err()); // d > k+m-1
+    }
+
+    #[test]
+    fn test_clone_and_debug() {
+        let clay = ClayCode::new(4, 2, 5).unwrap();
+        let clay2 = clay.clone();
+        assert_eq!(clay2.k, clay.k);
+        assert_eq!(clay2.m, clay.m);
+        assert_eq!(clay2.d, clay.d);
+        // Verify Debug is implemented
+        let debug_str = format!("{:?}", clay);
+        assert!(debug_str.contains("ClayCode"));
+    }
+
+    #[test]
+    fn test_new_default() {
+        let clay_default = ClayCode::new_default(4, 2).unwrap();
+        let clay_explicit = ClayCode::new(4, 2, 4 + 2 - 1).unwrap();
+        assert_eq!(clay_default.k, clay_explicit.k);
+        assert_eq!(clay_default.m, clay_explicit.m);
+        assert_eq!(clay_default.d, clay_explicit.d);
+        assert_eq!(clay_default.q, clay_explicit.q);
+        assert_eq!(clay_default.t, clay_explicit.t);
+        assert_eq!(clay_default.sub_chunk_no, clay_explicit.sub_chunk_no);
+        assert_eq!(clay_default.beta, clay_explicit.beta);
+
+        // Also test with different params
+        let clay_default2 = ClayCode::new_default(10, 4).unwrap();
+        let clay_explicit2 = ClayCode::new(10, 4, 13).unwrap();
+        assert_eq!(clay_default2.d, clay_explicit2.d);
+        assert_eq!(clay_default2.sub_chunk_no, clay_explicit2.sub_chunk_no);
+    }
+
+    #[test]
+    fn test_decode_empty_available_with_erasures() {
+        let clay = ClayCode::new(4, 2, 5).unwrap();
+        let available: HashMap<usize, Vec<u8>> = HashMap::new();
+        let result = clay.decode(&available, &[0]);
+        assert!(
+            matches!(result, Err(ClayError::InvalidParameters(_))),
+            "Expected InvalidParameters error when available is empty but erasures is non-empty, got {:?}",
+            result
+        );
     }
 
     // ============ Adversarial Tests ============
