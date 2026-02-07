@@ -164,7 +164,7 @@ pub fn decode(
 ///
 /// Processes layers in order of increasing intersection score, applying
 /// PRT/PFT transforms and RS decoding as needed.
-pub(crate) fn decode_layered(
+pub fn decode_layered(
     params: &DecodeParams,
     erased_chunks: &BTreeSet<usize>,
     chunks: &mut Vec<Vec<u8>>,
@@ -329,7 +329,7 @@ fn decode_layered_with_tracking(
 }
 
 /// Decode uncoupled layer using RS MDS code
-pub(crate) fn decode_uncoupled_layer(
+pub fn decode_uncoupled_layer(
     params: &DecodeParams,
     erased_chunks: &BTreeSet<usize>,
     z: usize,
@@ -410,7 +410,7 @@ pub(crate) fn decode_uncoupled_layer(
 /// Get companion layer index with proper modular arithmetic
 ///
 /// z_sw = (z + (x - z_y) * q^(t-1-y)) mod α
-pub(crate) fn get_companion_layer(params: &DecodeParams, z: usize, x: usize, y: usize, z_y: usize) -> usize {
+pub fn get_companion_layer(params: &DecodeParams, z: usize, x: usize, y: usize, z_y: usize) -> usize {
     debug_assert!(y < params.t, "y={} must be < t={}", y, params.t);
     debug_assert!(x < params.q, "x={} must be < q={}", x, params.q);
     debug_assert!(z_y < params.q, "z_y={} must be < q={}", z_y, params.q);
@@ -563,7 +563,7 @@ fn get_max_iscore(params: &DecodeParams, erased_chunks: &BTreeSet<usize>) -> usi
 /// Compute C* from C and U (for repair)
 ///
 /// companion_value = (U + C) / γ
-pub(crate) fn compute_cstar_from_c_and_u(c_helper: &[u8], u_helper: &[u8]) -> Vec<u8> {
+pub fn compute_cstar_from_c_and_u(c_helper: &[u8], u_helper: &[u8]) -> Vec<u8> {
     let len = c_helper.len();
     let mut companion_c = vec![0u8; len];
     let gamma_inv = crate::transforms::gf_inv(GAMMA);

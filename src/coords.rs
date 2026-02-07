@@ -39,46 +39,6 @@ pub fn get_plane_vector(z: usize, t: usize, q: usize) -> Vec<usize> {
     result
 }
 
-/// Check if a vertex is unpaired (red) in its layer
-///
-/// A vertex (x, y, z) is unpaired if x == z_y, where z_y is the y-th digit of z in base q.
-///
-/// # Arguments
-/// * `x` - x-coordinate
-/// * `y` - y-section
-/// * `z` - layer index
-/// * `q` - coupling factor
-///
-/// # Returns
-/// true if the vertex is unpaired (red)
-#[inline]
-#[allow(dead_code)]
-pub fn is_unpaired(x: usize, y: usize, z: usize, q: usize) -> bool {
-    let z_y = (z / q.pow(y as u32)) % q;
-    x == z_y
-}
-
-/// Get the z_y value (y-th digit of z in base q)
-#[inline]
-#[allow(dead_code)]
-pub fn get_z_y(z: usize, y: usize, q: usize) -> usize {
-    (z / q.pow(y as u32)) % q
-}
-
-/// Convert node index to (x, y) coordinates
-#[inline]
-#[allow(dead_code)]
-pub fn node_to_xy(node: usize, q: usize) -> (usize, usize) {
-    (node % q, node / q)
-}
-
-/// Convert (x, y) coordinates to node index
-#[inline]
-#[allow(dead_code)]
-pub fn xy_to_node(x: usize, y: usize, q: usize) -> usize {
-    y * q + x
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,27 +57,5 @@ mod tests {
 
         // For q=3, t=2: z=5 = 1*3 + 2 -> [1,2] (MSB=1, LSB=2)
         assert_eq!(get_plane_vector(5, 2, 3), vec![1, 2]);
-    }
-
-    #[test]
-    fn test_is_unpaired() {
-        let q = 2;
-        // z=0: plane_vec=[0,0], unpaired at x=0 for y=0 and y=1
-        assert!(is_unpaired(0, 0, 0, q));
-        assert!(is_unpaired(0, 1, 0, q));
-        assert!(!is_unpaired(1, 0, 0, q));
-
-        // z=3: plane_vec=[1,1], unpaired at x=1 for y=0 and y=1
-        assert!(is_unpaired(1, 0, 3, q));
-        assert!(is_unpaired(1, 1, 3, q));
-        assert!(!is_unpaired(0, 0, 3, q));
-    }
-
-    #[test]
-    fn test_node_conversion() {
-        let q = 3;
-        assert_eq!(node_to_xy(0, q), (0, 0));
-        assert_eq!(node_to_xy(5, q), (2, 1));
-        assert_eq!(xy_to_node(2, 1, q), 5);
     }
 }

@@ -31,20 +31,20 @@
 //!
 //! # Modules
 //!
-//! - [`error`]: Error types for Clay code operations
-//! - [`transforms`]: Pairwise coupling transforms (PRT/PFT)
-//! - [`encode`]: Encoding implementation
-//! - [`decode`]: Decoding and erasure recovery
-//! - [`repair`]: Single-node optimal repair
+//! - `error`: Error types for Clay code operations
+//! - `transforms`: Pairwise coupling transforms (PRT/PFT)
+//! - `encode`: Encoding implementation
+//! - `decode`: Decoding and erasure recovery
+//! - `repair`: Single-node optimal repair
 
 use std::collections::HashMap;
 
-pub(crate) mod coords;
-pub mod decode;
-pub mod encode;
-pub mod error;
-pub mod repair;
-pub mod transforms;
+mod coords;
+mod decode;
+mod encode;
+mod error;
+mod repair;
+mod transforms;
 
 pub use error::ClayError;
 
@@ -242,7 +242,7 @@ impl ClayCode {
 }
 
 /// Integer power function with overflow checking
-pub(crate) fn checked_pow(base: usize, exp: usize) -> Option<usize> {
+fn checked_pow(base: usize, exp: usize) -> Option<usize> {
     let mut result: usize = 1;
     let mut b = base;
     let mut e = exp;
