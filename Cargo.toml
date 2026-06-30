@@ -1,6 +1,6 @@
 [package]
 name = "clay-codes"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 rust-version = "1.65"
 description = "Clay (Coupled-Layer) erasure codes - MSR codes with optimal repair bandwidth"
@@ -12,8 +12,11 @@ readme = "README.md"
 keywords = ["erasure-codes", "msr", "repair", "distributed-storage", "reed-solomon"]
 categories = ["algorithms", "encoding"]
 
-[dependencies]
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
 reed-solomon-erasure = { version = "6.0", features = ["simd-accel"] }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+reed-solomon-erasure = { version = "6.0", default-features = false }
 
 [dev-dependencies]
 rand = "0.8"
