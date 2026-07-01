@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Clay Code Parameter Explorer</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .dot { border-radius: 2px; }
+    .stripe-node { min-width: 0; }
+    @keyframes pop-in {
+      0%   { transform: scale(1); background-color: rgb(71 85 105); }
+      40%  { transform: scale(1.3); }
+      100% { transform: scale(1); }
+    }
+    @keyframes fail-shake {
+      0%   { transform: translateX(0); opacity: 0.3; }
+      15%  { transform: translateX(-3px); opacity: 1; }
+      30%  { transform: translateX(3px); }
+      45%  { transform: translateX(-2px); }
+      60%  { transform: translateX(2px); }
+      75%  { transform: translateX(-1px); }
+      90%  { transform: translateX(1px); }
+      100% { transform: translateX(0); }
+    }
+    @keyframes recover {
+      0%   { background-color: rgb(239 68 68 / 0.7); transform: scale(1); }
+      50%  { transform: scale(1.3); }
+      100% { background-color: rgb(52 211 153); transform: scale(1); }
+    }
+    .dot-read    { animation: pop-in 0.35s ease-out both; }
+    .dot-lost    { animation: fail-shake 0.4s ease-out both; }
+    .dot-recover { animation: recover 0.6s ease-out both; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100">
+  <div class="max-w-7xl mx-auto px-6 py-10">
+    <h1 class="text-3xl font-bold mb-2">Clay Code Parameter Explorer</h1>
+    <p class="text-slate-400 mb-8">Choose parameters and see derived values + repair layout.</p>
+
+    <div class="space-y-6">
+      <!-- Inputs -->
+      <div class="bg-slate-900 rounded-xl p-6 shadow">
+        <h2 class="text-xl font-semibold mb-4">Inputs</h2>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div>
+            <label class="block text-sm text-slate-400">Data nodes (k)</label>
+            <p class="text-xs text-slate-500">Original data nodes.</p>
+            <input id="k" type="number" min="1" class="w-full rounded bg-slate-800 px-3 py-2 mt-1" value="10"/>
+          </div>
+          <div>
+            <label class="block text-sm text-slate-400">Parity nodes (m)</label>
+            <p class="text-xs text-slate-500">Redundancy nodes.</p>
+            <input id="m" type="number" min="1" class="w-full rounded bg-slate-800 px-3 py-2 mt-1" value="4"/>
+          </div>
+          <div>
+            <label class="block text-sm text-slate-400">Helper nodes (d)</label>
+            <p class="text-xs text-slate-500">Helpers during repair.</p>
+            <input id="d" type="number" min="1" class="w-full rounded bg-slate-800 px-3 py-2 mt-1" value="11"/>
+          </div>
+          <div>
+            <label class="block text-sm text-slate-400">Chunk size</label>
+            <p class="text-xs text-slate-500">Per node per stripe.</p>
+            <select id="chunkSize" class="w-full rounded bg-slate-800 px-3 py-2 mt-1">
+              <option value="1024">1 KiB</option>
+              <option value="10240">10 KiB</option>
+              <option value="102400">100 KiB</option>
+              <option value="1048576" selected>1 MiB</option>
+              <option value="10485760">10 MiB</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Derived -->
+      <div class="bg-slate-900 rounded-xl p-6 shadow">
+        <h2 class="text-xl font-semibold mb-4">Derived Values</h2>
+        <div id="errors" class="hidden bg-red-900/40 text-red-200 rounded p-3 mb-4"></div>
+        <div id="warnings" class="hidden bg-amber-900/40 text-amber-200 rounded p-3 mb-4"></div>
+
+        <div class="grid md:grid-cols-2 gap-4">
+          <div class="bg-slate-800 rounded p-4">
+            <div class="text-sm text-slate-400">Total nodes (n)</div>
+            <p class="text-xs text-slate-500">k + m = total nodes in the code.</p>
+            <div id="n" class="text-xl">&mdash;</div>
+          </div>
+
+          <div class="bg-slate-800 rounded p-4">
+            <div class="text-sm text-slate-400">q</div>
+            <p class="text-xs text-slate-500">The base used for Clay's layered indexing scheme.</p>
+            <div id="q" class="text-xl">&mdash;</div>
+          </div>
+
+          <div class="bg-slate-800 rounded p-4">
+            <div class="text-sm text-slate-400">&nu; (nu)</div>
+            <p class="text-xs text-slate-500">Shortening: phantom zero-nodes added so (n+&nu;) is divisible by q.</p>
+            <div id="nu" class="text-xl">&mdash;</div>
+          </div>
+
+          <div class="bg-slate-800 rounded p-4">
+            <div class="text-sm text-slate-400">t</div>
+            <p class="text-xs text-slate-500">How many "y-sections" the nodes are split into.</p>
+            <div id="t" class="text-xl">&mdash;</div>
+          </div>
+
+          <div class="bg-slate-800 rounded p-4">
+            <div class="text-sm text-slate-400">&alpha; (alpha)</div>
+            <p class="text-xs text-slate-500">How many tiny pieces (sub-chunks) each node stores.</p>
+            <div id="alpha" class="text-xl">&mdash;</div>
+          </div>
+
+          <div class="bg-slate-800 rounded p-4">
+            <div class="text-sm text-slate-400">&beta; (beta)</div>
+            <p class="text-xs text-slate-500">How many sub-chunks each helper must send to repair.</p>
+            <div id="beta" class="text-xl">&mdash;</div>
+          </div>
+
+          <div class="bg-slate-800 rounded p-4">
+            <div class="text-sm text-slate-400">Repair fraction</div>
+            <p class="text-xs text-slate-500">What % of a node is read during repair (smaller is better).</p>
+            <div id="bwfrac" class="text-xl">&mdash;</div>
+          </div>
+
+          <div class="bg-slate-800 rounded p-4">
+            <div class="text-sm text-slate-400">Replication Factor</div>
+            <p class="text-xs text-slate-500">Storage overhead. Example: 1.6&times; means 60% extra space.</p>
+            <div id="repfactor" class="text-xl">&mdash;</div>
+          </div>
+        </div>
+
+        <h3 class="text-lg font-semibold mt-6 mb-3">Stripe & Sub-chunk Sizes</h3>
+        <div class="grid md:grid-cols-2 gap-4">
+          <div class="bg-slate-800 rounded p-4">
+            <div class="text-sm text-slate-400">Stripe Size</div>
+            <p class="text-xs text-slate-500">Total bytes in one stripe across all data nodes.</p>
+            <div id="stripeBytes" class="text-xl">&mdash;</div>
+          </div>
+          <div class="bg-slate-800 rounded p-4">
+            <div class="text-sm text-slate-400">Chunk Size</div>
+            <p class="text-xs text-slate-500">Per node per stripe.</p>
+            <div id="chunkDisplay" class="text-xl">&mdash;</div>
+          </div>
+          <div class="bg-slate-800 rounded p-4">
+            <div class="text-sm text-slate-400">Sub-chunk Size</div>
+            <p class="text-xs text-slate-500">The smallest unit moved during repair.</p>
+            <div id="subchunkSize" class="text-xl">&mdash;</div>
+          </div>
+          <div class="bg-slate-800 rounded p-4">
+            <div class="text-sm text-slate-400">Min Stripe Unit</div>
+            <p class="text-xs text-slate-500">Stripe size must be a multiple of this.</p>
+            <div id="minUnit" class="text-xl">&mdash;</div>
+          </div>
+        </div>
+
+        <!-- ===== Repair Visualization ===== -->
+        <h3 class="text-lg font-semibold mt-8 mb-3">Repair Visualization</h3>
+        <div class="bg-slate-800 rounded p-4">
+          <!-- Description -->
+          <p class="text-sm text-slate-400 mb-3">
+            When a node fails, <strong class="text-slate-200">d</strong> helper nodes each send
+            <strong class="text-slate-200">&beta;</strong> of their
+            <strong class="text-slate-200">&alpha;</strong> sub-chunks
+            (<strong class="text-slate-200">1/q</strong> of their data).
+            Every helper sends the <em>same</em> sub-chunk indices &mdash; which ones depend on
+            the failed node's position in Clay's layered structure.
+          </p>
+
+          <!-- Controls -->
+          <div class="flex flex-wrap gap-4 mb-4 items-center">
+            <div>
+              <label class="text-sm text-slate-400">Failed node</label>
+              <select id="failedNodeSel" class="ml-2 rounded bg-slate-900 px-2 py-1"></select>
+            </div>
+          </div>
+
+          <!-- Repair summary stats -->
+          <div class="grid grid-cols-3 gap-3 mb-4">
+            <div class="bg-slate-900/60 rounded p-2 text-center">
+              <div class="text-xs text-slate-500">Helpers contacted</div>
+              <div class="text-lg font-semibold" id="helpersCount">&mdash;</div>
+            </div>
+            <div class="bg-slate-900/60 rounded p-2 text-center">
+              <div class="text-xs text-slate-500">Sub-chunks per helper</div>
+              <div class="text-lg font-semibold" id="scPerHelper">&mdash;</div>
+            </div>
+            <div class="bg-slate-900/60 rounded p-2 text-center">
+              <div class="text-xs text-slate-500">Total repair download</div>
+              <div class="text-lg font-semibold" id="totalRepairBW">&mdash;</div>
+            </div>
+          </div>
+
+          <!-- Stripe overview: all nodes -->
+          <div class="mb-3">
+            <div class="text-xs text-slate-500 mb-2">
+              Each column is one node's chunk. Each dot is a sub-chunk.
+            </div>
+            <div id="stripeView" class="flex flex-wrap gap-1 items-end"></div>
+            <div id="stripeNote" class="text-xs text-slate-600 mt-1"></div>
+          </div>
+
+          <!-- Legend -->
+          <div class="flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-400 mt-3 pt-3 border-t border-slate-700">
+            <span class="flex items-center gap-1.5"><span class="inline-block w-2.5 h-2.5 rounded-sm bg-red-500/80"></span> Lost (failed node)</span>
+            <span class="flex items-center gap-1.5"><span class="inline-block w-2.5 h-2.5 rounded-sm bg-emerald-400"></span> Read for repair</span>
+            <span class="flex items-center gap-1.5"><span class="inline-block w-2.5 h-2.5 rounded-sm bg-slate-600"></span> Not needed</span>
+            <span class="flex items-center gap-1.5"><span class="inline-block w-2.5 h-2.5 rounded-sm bg-slate-800 ring-1 ring-slate-700"></span> Not a helper</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+function formatBytes(b) {
+  if (!isFinite(b) || b <= 0) return "\u2014";
+  if (b < 1024) return b + " B";
+  const u = ["KiB", "MiB", "GiB", "TiB"];
+  let i = -1;
+  do { b /= 1024; i++; } while (b >= 1024 && i < u.length - 1);
+  return (b % 1 === 0 ? b : b.toFixed(2)) + " " + u[i];
+}
+
+// ===== Animation state =====
+let animationTimer = null;
+let lastAnimatedNode = -1;
+
+function startAnimation(n) {
+  if (animationTimer) return; // already running
+  animationTimer = setInterval(function() {
+    if (failedNodeSel.value !== "animate") { stopAnimation(); return; }
+    compute();
+  }, 3000);
+}
+
+function stopAnimation() {
+  if (animationTimer) { clearInterval(animationTimer); animationTimer = null; }
+}
+
+// ===== Repair pattern logic (mirrors Rust implementation) =====
+
+function getRepairSubchunkIndices(q, t, alpha, lostInternal) {
+  const x = lostInternal % q;
+  const y = Math.floor(lostInternal / q);
+  const indices = new Set();
+
+  const seqScCount = Math.pow(q, t - 1 - y);
+  const numSeq = Math.pow(q, y);
+
+  for (let seq = 0; seq < numSeq; seq++) {
+    const base = x * seqScCount + seq * q * seqScCount;
+    for (let offset = 0; offset < seqScCount; offset++) {
+      indices.add(base + offset);
+    }
+  }
+  return indices;
+}
+
+function getHelperNodes(n, nu, q, k, lostInternal) {
+  const nVirtual = n + nu;
+  const yLost = Math.floor(lostInternal / q);
+  const helpers = [];
+  const d = k + q - 1;
+
+  // Same y-section peers first
+  for (let x = 0; x < q; x++) {
+    const node = yLost * q + x;
+    if (node !== lostInternal && node < n) {
+      helpers.push(node);
+    }
+  }
+
+  // Additional helpers from other sections
+  for (let i = 0; i < nVirtual && helpers.length < d; i++) {
+    if (i !== lostInternal && Math.floor(i / q) !== yLost && i < n) {
+      helpers.push(i);
+    }
+  }
+
+  return new Set(helpers);
+}
+
+// ===== Render the stripe / repair visualization =====
+
+function renderRepair(n, nu, k, q, t, alpha, beta, chunkBytes) {
+  const sel = failedNodeSel;
+  const prevVal = sel.value;
+
+  // Populate failed-node dropdown
+  const wasAnimating = prevVal === "animate";
+  const expectedLen = n + 1; // n nodes + "Animate" option
+  if (sel.options.length !== expectedLen) {
+    sel.innerHTML = "";
+    sel.add(new Option("\u25b6  Animate", "animate"));
+    for (let i = 0; i < n; i++) {
+      const x = i % q, y = Math.floor(i / q);
+      sel.add(new Option("Node " + i + "  (section " + y + ", pos " + x + ")", i));
+    }
+    if (wasAnimating) sel.value = "animate";
+  }
+
+  // If animating, pick a random node (different from last)
+  let lostNode;
+  if (sel.value === "animate" || wasAnimating) {
+    sel.value = "animate";
+    do { lostNode = Math.floor(Math.random() * n); } while (lostNode === lastAnimatedNode && n > 1);
+    lastAnimatedNode = lostNode;
+    startAnimation(n);
+  } else {
+    const pv = parseInt(prevVal);
+    lostNode = (!isNaN(pv) && pv < n) ? pv : 0;
+    sel.value = lostNode;
+    stopAnimation();
+  }
+
+  const d = k + q - 1;
+  const helpers = getHelperNodes(n, nu, q, k, lostNode);
+  const readIndices = getRepairSubchunkIndices(q, t, alpha, lostNode);
+
+  // Summary stats
+  helpersCount.textContent = d;
+  scPerHelper.textContent = beta + " / " + alpha + "  (" + (100 * beta / alpha).toFixed(1) + "%)";
+  const totalSc = d * beta;
+  const scBytes = chunkBytes / alpha;
+  totalRepairBW.textContent = formatBytes(totalSc * scBytes);
+
+  // Build stripe view
+  stripeView.innerHTML = "";
+
+  const maxSc = 1024;
+  const showNodes = n;
+  const showSc = Math.min(alpha, maxSc);
+
+  // Adaptive dot sizing
+  let dotPx, gapCls;
+  if (showSc <= 16) { dotPx = 12; gapCls = "gap-0.5"; }
+  else if (showSc <= 64) { dotPx = 8; gapCls = "gap-px"; }
+  else if (showSc <= 256) { dotPx = 6; gapCls = "gap-px"; }
+  else { dotPx = 4; gapCls = "gap-px"; }
+
+  const scPerRow = Math.ceil(Math.sqrt(showSc));
+
+  for (let nodeIdx = 0; nodeIdx < showNodes; nodeIdx++) {
+    const col = document.createElement("div");
+    col.className = "stripe-node flex flex-col items-center";
+
+    // Label
+    const label = document.createElement("div");
+    const isLost = nodeIdx === lostNode;
+    const isHelper = helpers.has(nodeIdx);
+
+    if (isLost) {
+      label.className = "text-xs font-bold text-red-400 mb-0.5 tabular-nums";
+    } else if (isHelper) {
+      label.className = "text-xs font-bold text-emerald-400 mb-0.5 tabular-nums";
+    } else {
+      label.className = "text-xs text-slate-600 mb-0.5 tabular-nums";
+    }
+    label.textContent = nodeIdx;
+    col.appendChild(label);
+
+    // Compute recovery delay: after all green dots finish
+    // Max green delay = 500 + (n-1)*15 + (showSc-1)*1.5 + 350ms animation
+    const recoverStart = 500 + n * 15 + showSc * 1.5 + 350;
+
+    // Grid wrapper (relative so we can overlay recovery on lost node)
+    const wrapper = document.createElement("div");
+    wrapper.style.position = "relative";
+
+    // Grid of sub-chunks
+    const grid = document.createElement("div");
+    grid.className = "grid " + gapCls;
+    grid.style.gridTemplateColumns = "repeat(" + scPerRow + "," + dotPx + "px)";
+
+    for (let z = 0; z < showSc; z++) {
+      const cell = document.createElement("div");
+      cell.style.width = dotPx + "px";
+      cell.style.height = dotPx + "px";
+      cell.className = "dot";
+
+      if (isLost) {
+        cell.style.backgroundColor = "rgb(239 68 68 / 0.7)";
+        cell.classList.add("dot-lost");
+      } else if (isHelper && readIndices.has(z)) {
+        cell.style.backgroundColor = "rgb(52 211 153)";
+        cell.classList.add("dot-read");
+        // delay after the red shake, then stagger across nodes
+        cell.style.animationDelay = (500 + nodeIdx * 15 + z * 1.5) + "ms";
+      } else if (isHelper) {
+        cell.style.backgroundColor = "rgb(71 85 105)";
+      } else {
+        cell.style.backgroundColor = "rgb(30 41 59)";
+        cell.style.outline = "1px solid rgb(51 65 85)";
+      }
+      grid.appendChild(cell);
+    }
+    wrapper.appendChild(grid);
+
+    // Overlay recovery dots on failed node
+    if (isLost) {
+      const overlay = document.createElement("div");
+      overlay.className = "grid " + gapCls;
+      overlay.style.gridTemplateColumns = "repeat(" + scPerRow + "," + dotPx + "px)";
+      overlay.style.position = "absolute";
+      overlay.style.top = "0";
+      overlay.style.left = "0";
+
+      for (let z = 0; z < showSc; z++) {
+        const cell = document.createElement("div");
+        cell.style.width = dotPx + "px";
+        cell.style.height = dotPx + "px";
+        cell.className = "dot dot-recover";
+        cell.style.animationDelay = (recoverStart + z * 1.5) + "ms";
+        overlay.appendChild(cell);
+      }
+      wrapper.appendChild(overlay);
+    }
+
+    col.appendChild(wrapper);
+    stripeView.appendChild(col);
+  }
+
+  // Overflow note
+  stripeNote.textContent = (alpha > maxSc) ? "showing " + showSc + " of " + alpha + " sub-chunks per node" : "";
+}
+
+// ===== Main compute =====
+
+function compute() {
+  const k = parseInt(kEl.value);
+  const m = parseInt(mEl.value);
+  const d = parseInt(dEl.value);
+  const chunkBytes = parseInt(chunkSizeEl.value);
+
+  let errs = [], warns = [];
+  if (isNaN(k) || isNaN(m) || isNaN(d)) { errorsEl.classList.add("hidden"); warningsEl.classList.add("hidden"); return; }
+
+  const n = k + m;
+
+  if (k < 1) errs.push("k must be \u2265 1");
+  if (m < 1) errs.push("m (parity) must be \u2265 1");
+  if (d < k) errs.push("d must be \u2265 k (" + k + ")");
+  if (d > n - 1) errs.push("d must be \u2264 n\u22121 (" + (n - 1) + ")");
+
+  const q = d - k + 1;
+  if (q < 2) errs.push("q = d\u2212k+1 must be \u2265 2 (got " + q + ")");
+
+  // Compute nu (shortening) — matches Rust implementation
+  const nu = (q >= 2) ? ((n % q === 0) ? 0 : q - (n % q)) : 0;
+  const t = (q >= 2) ? (n + nu) / q : 0;
+
+  if (nu > 0 && q >= 2) {
+    const wastePct = ((nu / (n + nu)) * 100).toFixed(0);
+    warns.push("Shortened code: \u03bd=" + nu + " phantom zero-nodes added internally (n+\u03bd=" + (n + nu) + " divisible by q=" + q + "). " +
+      "Encode/decode/repair process " + (n + nu) + " virtual nodes instead of " + n + " \u2014 " + wastePct + "% extra compute.");
+  }
+
+  const alpha = (q >= 2 && t > 0) ? Math.pow(q, t) : 0;
+  const beta = alpha ? Math.pow(q, t - 1) : 0;
+
+  nEl.textContent = n;
+  nuEl.textContent = nu;
+  qEl.textContent = q;
+  tEl.textContent = t;
+  alphaEl.textContent = alpha || "\u2014";
+  betaEl.textContent = beta || "\u2014";
+  bwfrac.textContent = alpha ? (beta / alpha).toFixed(4) : "\u2014";
+  repfactor.textContent = (k > 0) ? (n / k).toFixed(2) + "\u00d7" : "\u2014";
+
+  // Highlight nu card when shortened
+  const nuCard = nuEl.parentElement;
+  if (nu > 0) {
+    nuCard.classList.remove("bg-slate-800");
+    nuCard.classList.add("bg-amber-900/40", "ring-1", "ring-amber-500/50");
+  } else {
+    nuCard.classList.add("bg-slate-800");
+    nuCard.classList.remove("bg-amber-900/40", "ring-1", "ring-amber-500/50");
+  }
+
+  const stripeSize = k * chunkBytes;
+  const minUnitVal = k * alpha;
+  chunkDisplay.textContent = formatBytes(chunkBytes);
+  stripeBytesEl.textContent = formatBytes(stripeSize);
+  subchunkSizeEl.textContent = alpha ? formatBytes(chunkBytes / alpha) : "\u2014";
+  minUnitEl.textContent = alpha ? formatBytes(minUnitVal) : "\u2014";
+
+  if (errs.length) {
+    errorsEl.classList.remove("hidden");
+    errorsEl.innerHTML = errs.join("<br>");
+  } else {
+    errorsEl.classList.add("hidden");
+  }
+
+  if (warns.length) {
+    warningsEl.classList.remove("hidden");
+    warningsEl.innerHTML = warns.join("<br>");
+  } else {
+    warningsEl.classList.add("hidden");
+  }
+
+  if (q >= 2 && t > 0 && !errs.length)
+    renderRepair(n, nu, k, q, t, alpha, beta, chunkBytes);
+}
+
+// ===== DOM refs =====
+
+// Inputs
+const kEl = document.getElementById("k"),
+      mEl = document.getElementById("m"),
+      dEl = document.getElementById("d"),
+      chunkSizeEl = document.getElementById("chunkSize");
+
+// Derived outputs
+const nEl = document.getElementById("n"),
+      nuEl = document.getElementById("nu"),
+      qEl = document.getElementById("q"),
+      tEl = document.getElementById("t"),
+      alphaEl = document.getElementById("alpha"),
+      betaEl = document.getElementById("beta"),
+      bwfrac = document.getElementById("bwfrac"),
+      repfactor = document.getElementById("repfactor");
+const stripeBytesEl = document.getElementById("stripeBytes"),
+      chunkDisplay = document.getElementById("chunkDisplay"),
+      subchunkSizeEl = document.getElementById("subchunkSize"),
+      minUnitEl = document.getElementById("minUnit");
+const errorsEl = document.getElementById("errors"),
+      warningsEl = document.getElementById("warnings");
+
+// Repair viz
+const failedNodeSel = document.getElementById("failedNodeSel"),
+      helpersCount = document.getElementById("helpersCount"),
+      scPerHelper = document.getElementById("scPerHelper"),
+      totalRepairBW = document.getElementById("totalRepairBW"),
+      stripeView = document.getElementById("stripeView"),
+      stripeNote = document.getElementById("stripeNote");
+
+// Init
+compute();
+
+// All inputs recompute
+kEl.addEventListener("input", compute);
+mEl.addEventListener("input", compute);
+dEl.addEventListener("input", compute);
+chunkSizeEl.addEventListener("change", compute);
+failedNodeSel.addEventListener("change", function() {
+  if (failedNodeSel.value !== "animate") stopAnimation();
+  compute();
+});
+</script>
+</body>
+</html>
