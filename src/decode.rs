@@ -128,13 +128,24 @@ pub fn decode(
     let sub_chunk_size = chunk_size / params.sub_chunk_no;
     let total_nodes = params.q * params.t;
 
-    // Build full chunks array with proper node indices
-    let mut chunks: Vec<Vec<u8>> = vec![vec![0u8; chunk_size]; total_nodes];
+    // Stage chunks by internal index; only erased and shortened slots need zero buffers
+    let mut chunks: Vec<Vec<u8>> = Vec::with_capacity(total_nodes);
+    for internal_idx in 0..total_nodes {
+        if internal_idx >= params.k && internal_idx < params.k + params.nu {
+            chunks.push(vec![0u8; chunk_size]);
+            continue;
+        }
 
-    // Copy available chunks, mapping from external (k data + m parity) to internal indices
-    for (&idx, data) in available.iter() {
-        let internal_idx = if idx < params.k { idx } else { idx + params.nu };
-        chunks[internal_idx] = data.clone();
+        let external_idx = if internal_idx < params.k {
+            internal_idx
+        } else {
+            internal_idx - params.nu
+        };
+        if let Some(data) = available.get(&external_idx) {
+            chunks.push(data.clone());
+        } else {
+            chunks.push(vec![0u8; chunk_size]);
+        }
     }
 
     // Build erasure set with internal indices
@@ -337,11 +348,9 @@ pub fn decode_uncoupled_layer(
     u_buf: &mut [Vec<u8>],
     rs: &reed_solomon_erasure::ReedSolomon<galois_8::Field>,
 ) -> Result<(), ClayError> {
-    let total_nodes = params.q * params.t;
     let offset = z * sub_chunk_size;
     let parity_start = params.original_count; // k + nu
 
-    // Check if we have too many erasures for this layer
     if erased_chunks.len() > params.m {
         return Err(ClayError::TooManyErasures {
             max: params.m,
@@ -349,59 +358,32 @@ pub fn decode_uncoupled_layer(
         });
     }
 
-    // If no erasures, nothing to do
     if erased_chunks.is_empty() {
         return Ok(());
     }
 
-    // Check if we have erased originals or parities
+    // The RS codec works directly on this layer's slice of each node buffer,
+    // so nothing is copied in or out
+    let mut shards: Vec<(&mut [u8], bool)> = Vec::with_capacity(u_buf.len());
+    for (i, node_buf) in u_buf.iter_mut().enumerate() {
+        let is_present = !erased_chunks.contains(&i);
+        shards.push((&mut node_buf[offset..offset + sub_chunk_size], is_present));
+    }
+
     let has_erased_originals = erased_chunks.iter().any(|&i| i < parity_start);
-    let has_erased_parities = erased_chunks.iter().any(|&i| i >= parity_start);
-
     if has_erased_originals {
-        // Build shards as Option<Vec<u8>> for reconstruction
-        let mut shards: Vec<Option<Vec<u8>>> = Vec::with_capacity(total_nodes);
-
-        for i in 0..total_nodes {
-            if erased_chunks.contains(&i) {
-                shards.push(None);
-            } else {
-                shards.push(Some(u_buf[i][offset..offset + sub_chunk_size].to_vec()));
-            }
-        }
-
-        // Reconstruct missing shards
         rs.reconstruct(&mut shards).map_err(|e| {
             ClayError::ReconstructionFailed(format!("Layer {} RS reconstruct failed: {:?}", z, e))
         })?;
-
-        // Copy restored shards back
-        for i in 0..total_nodes {
-            if erased_chunks.contains(&i) {
-                if let Some(ref data) = shards[i] {
-                    u_buf[i][offset..offset + sub_chunk_size].copy_from_slice(data);
-                }
-            }
+    } else {
+        // Only parities are missing, so re-encoding from the originals is enough
+        let mut slices: Vec<&mut [u8]> = Vec::with_capacity(shards.len());
+        for (slice, _) in shards {
+            slices.push(slice);
         }
-    } else if has_erased_parities {
-        // Only parity shards erased - just re-encode
-        let mut shards: Vec<Vec<u8>> = Vec::with_capacity(total_nodes);
-
-        for i in 0..total_nodes {
-            shards.push(u_buf[i][offset..offset + sub_chunk_size].to_vec());
-        }
-
-        // Encode to regenerate parity shards
-        rs.encode(&mut shards).map_err(|e| {
+        rs.encode(&mut slices).map_err(|e| {
             ClayError::ReconstructionFailed(format!("Layer {} RS encode failed: {:?}", z, e))
         })?;
-
-        // Copy regenerated parity shards back
-        for i in parity_start..total_nodes {
-            if erased_chunks.contains(&i) {
-                u_buf[i][offset..offset + sub_chunk_size].copy_from_slice(&shards[i]);
-            }
-        }
     }
 
     Ok(())

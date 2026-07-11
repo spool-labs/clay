@@ -41,17 +41,18 @@ pub fn encode(params: &EncodeParams, data: &[u8]) -> Vec<Vec<u8>> {
     let chunk_size = padded_len / params.k;
     let sub_chunk_size = chunk_size / params.sub_chunk_no;
 
-    // Create padded data
-    let mut padded_data = data.to_vec();
-    padded_data.resize(padded_len, 0);
-
     // Initialize all chunks (k data + nu shortened + m parity)
     let total_nodes = params.q * params.t; // k + m + nu
     let mut chunks: Vec<Vec<u8>> = vec![vec![0u8; chunk_size]; total_nodes];
 
-    // Load data into first k nodes
+    // Split data across the first k nodes; the zeroed tail is the padding
     for i in 0..params.k {
-        chunks[i].copy_from_slice(&padded_data[i * chunk_size..(i + 1) * chunk_size]);
+        let start = i * chunk_size;
+        if start >= data.len() {
+            break;
+        }
+        let end = data.len().min(start + chunk_size);
+        chunks[i][..end - start].copy_from_slice(&data[start..end]);
     }
 
     // Shortened nodes (k to k+nu-1) are already zeros - they are KNOWN zeros,
@@ -70,10 +71,10 @@ pub fn encode(params: &EncodeParams, data: &[u8]) -> Vec<Vec<u8>> {
     // Return only the k data + m parity chunks (exclude shortened nodes)
     let mut result = Vec::with_capacity(params.n);
     for i in 0..params.k {
-        result.push(chunks[i].clone());
+        result.push(std::mem::take(&mut chunks[i]));
     }
     for i in (params.k + params.nu)..total_nodes {
-        result.push(chunks[i].clone());
+        result.push(std::mem::take(&mut chunks[i]));
     }
 
     result
