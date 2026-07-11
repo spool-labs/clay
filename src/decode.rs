@@ -4,11 +4,12 @@
 //! It handles both full decoding (all chunks available) and erasure recovery
 //! (up to m chunks missing).
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 
 use reed_solomon_erasure::galois_8;
+use reed_solomon_erasure::ReedSolomon;
 
-use crate::coords::get_plane_vector;
+use crate::coords::LayerGeometry;
 use crate::encode::EncodeParams;
 use crate::error::ClayError;
 use crate::transforms::{compute_c_into, compute_u_into, pft_into, prt_into};
@@ -16,10 +17,21 @@ use crate::transforms::{compute_c_into, compute_u_into, pft_into, prt_into};
 /// Parameters needed for decoding (same as encode for now)
 pub type DecodeParams = EncodeParams;
 
+/// The GF(2^8) Reed-Solomon codec shared across all layers
+pub type RsCodec = ReedSolomon<galois_8::Field>;
+
+/// Scratch buffers shared by every layer of one decode call
+struct DecodeScratch {
+    u_buf: Vec<Vec<u8>>,
+    u_computed: Vec<Vec<bool>>,
+    needs_mds: Vec<bool>,
+}
+
 /// Recover original data from available chunks
 ///
 /// # Parameters
 /// - `params`: Code parameters
+/// - `rs`: Reed-Solomon codec built for these parameters
 /// - `available`: Map from chunk index to chunk data
 /// - `erasures`: Set of erased chunk indices
 ///
@@ -27,6 +39,7 @@ pub type DecodeParams = EncodeParams;
 /// Recovered original data, or error if decoding fails
 pub fn decode(
     params: &DecodeParams,
+    rs: &RsCodec,
     available: &HashMap<usize, Vec<u8>>,
     erasures: &[usize],
 ) -> Result<Vec<u8>, ClayError> {
@@ -145,19 +158,14 @@ pub fn decode(
         }
     }
 
-    // Build erasure set with internal indices
-    // Note: shortened nodes are NOT erasures - they are known zeros
-    let mut erased_set: BTreeSet<usize> = BTreeSet::new();
+    // Mark erasures by internal index; shortened nodes are known zeros, not erasures
+    let mut is_erased: Vec<bool> = vec![false; total_nodes];
     for &e in erasures {
         let internal_idx = if e < params.k { e } else { e + params.nu };
-        erased_set.insert(internal_idx);
+        is_erased[internal_idx] = true;
     }
 
-    // Shortened nodes are KNOWN zeros, already set in chunks array
-    // They should NOT be added to erased_set
-
-    // Decode
-    decode_layered(params, &erased_set, &mut chunks, sub_chunk_size)?;
+    decode_layered(params, rs, &is_erased, &mut chunks, sub_chunk_size)?;
 
     // Extract original data from first k chunks
     let mut result = Vec::with_capacity(params.k * chunk_size);
@@ -174,88 +182,103 @@ pub fn decode(
 /// PRT/PFT transforms and RS decoding as needed.
 pub fn decode_layered(
     params: &DecodeParams,
-    erased_chunks: &BTreeSet<usize>,
-    chunks: &mut Vec<Vec<u8>>,
+    rs: &RsCodec,
+    is_erased: &[bool],
+    chunks: &mut [Vec<u8>],
     sub_chunk_size: usize,
 ) -> Result<(), ClayError> {
     let total_nodes = params.q * params.t;
+    let geometry = LayerGeometry::new(params.q, params.t, params.sub_chunk_no);
 
-    // Create RS codec once for all layers
-    let rs = reed_solomon_erasure::ReedSolomon::<galois_8::Field>::new(
-        params.original_count,
-        params.recovery_count,
-    )
-    .map_err(|e| ClayError::ReconstructionFailed(format!("RS init failed: {:?}", e)))?;
+    let mut erased_nodes: Vec<usize> = Vec::new();
+    for (node, &erased) in is_erased.iter().enumerate() {
+        if erased {
+            erased_nodes.push(node);
+        }
+    }
 
-    // Initialize U buffers
     let chunk_size = chunks[0].len();
-    let mut u_buf: Vec<Vec<u8>> = vec![vec![0u8; chunk_size]; total_nodes];
+    let mut scratch = DecodeScratch {
+        u_buf: vec![vec![0u8; chunk_size]; total_nodes],
+        u_computed: vec![vec![false; params.sub_chunk_no]; total_nodes],
+        needs_mds: vec![false; total_nodes],
+    };
 
-    // Track which U values have been computed (for using across iterations)
-    let mut u_computed: Vec<Vec<bool>> = vec![vec![false; params.sub_chunk_no]; total_nodes];
-
-    // Compute layer order by intersection score
-    let mut order: Vec<usize> = vec![0; params.sub_chunk_no];
-    set_planes_sequential_decoding_order(params, &mut order, erased_chunks);
-
-    let max_iscore = get_max_iscore(params, erased_chunks);
+    // Bucket layers by intersection score so each pass visits only its own layers
+    let max_iscore = get_max_iscore(params, &erased_nodes);
+    let mut layers_by_iscore: Vec<Vec<usize>> = vec![Vec::new(); max_iscore + 1];
+    for z in 0..params.sub_chunk_no {
+        let digits = geometry.plane_digits(z);
+        let mut iscore = 0;
+        for &node in &erased_nodes {
+            if node % params.q == digits[node / params.q] {
+                iscore += 1;
+            }
+        }
+        layers_by_iscore[iscore].push(z);
+    }
 
     // Process layers in order of increasing intersection score
-    for iscore in 0..=max_iscore {
+    for layers in &layers_by_iscore {
         // First pass: decode erasures for layers with this iscore
-        for z in 0..params.sub_chunk_no {
-            if order[z] == iscore {
-                decode_layered_with_tracking(
-                    params,
-                    erased_chunks,
-                    z,
-                    chunks,
-                    &mut u_buf,
-                    &mut u_computed,
-                    sub_chunk_size,
-                    &rs,
-                )?;
-            }
+        for &z in layers {
+            decode_layered_with_tracking(
+                params,
+                rs,
+                &geometry,
+                is_erased,
+                z,
+                chunks,
+                &mut scratch,
+                sub_chunk_size,
+            )?;
         }
 
         // Second pass: recover C values from U values
-        for z in 0..params.sub_chunk_no {
-            if order[z] == iscore {
-                let z_vec = get_plane_vector(z, params.t, params.q);
+        for &z in layers {
+            let digits = geometry.plane_digits(z);
 
-                for &node_xy in erased_chunks {
-                    let x = node_xy % params.q;
-                    let y = node_xy / params.q;
-                    let z_y = z_vec[y];
-                    let node_sw = y * params.q + z_y;
-                    let z_sw = get_companion_layer(params, z, x, y, z_y);
+            for &node_xy in &erased_nodes {
+                let x = node_xy % params.q;
+                let y = node_xy / params.q;
+                let z_y = digits[y];
+                let node_sw = y * params.q + z_y;
+                let z_sw = geometry.companion_layer(z, x, y, z_y);
 
-                    if z_y != x {
-                        if !erased_chunks.contains(&node_sw) {
-                            // Type 1: companion is not erased
-                            recover_type1_erasure(
-                                params,
-                                chunks,
-                                &u_buf,
-                                x,
-                                y,
-                                z,
-                                z_y,
-                                z_sw,
-                                sub_chunk_size,
-                            );
-                        } else if z_y < x {
-                            // Both erased, process once (when z_y < x)
-                            get_coupled_from_uncoupled(
-                                params, chunks, &u_buf, x, y, z, z_y, z_sw, sub_chunk_size,
-                            );
-                        }
-                    } else {
-                        // Red vertex: C = U
-                        let offset = z * sub_chunk_size;
-                        chunks[node_xy][offset..offset + sub_chunk_size]
-                            .copy_from_slice(&u_buf[node_xy][offset..offset + sub_chunk_size]);
+                if z_y != x {
+                    if !is_erased[node_sw] {
+                        // Type 1: companion is not erased
+                        recover_type1_erasure(
+                            params,
+                            chunks,
+                            &scratch.u_buf,
+                            x,
+                            y,
+                            z,
+                            z_y,
+                            z_sw,
+                            sub_chunk_size,
+                        );
+                    } else if z_y < x {
+                        // Both erased, process once (when z_y < x)
+                        get_coupled_from_uncoupled(
+                            params,
+                            chunks,
+                            &scratch.u_buf,
+                            x,
+                            y,
+                            z,
+                            z_y,
+                            z_sw,
+                            sub_chunk_size,
+                        );
                     }
+                } else {
+                    // Red vertex: C = U
+                    let offset = z * sub_chunk_size;
+                    chunks[node_xy][offset..offset + sub_chunk_size].copy_from_slice(
+                        &scratch.u_buf[node_xy][offset..offset + sub_chunk_size],
+                    );
                 }
             }
         }
@@ -267,35 +290,44 @@ pub fn decode_layered(
 /// Decode erasures for a single layer with U tracking
 fn decode_layered_with_tracking(
     params: &DecodeParams,
-    erased_chunks: &BTreeSet<usize>,
+    rs: &RsCodec,
+    geometry: &LayerGeometry,
+    is_erased: &[bool],
     z: usize,
     chunks: &[Vec<u8>],
-    u_buf: &mut [Vec<u8>],
-    u_computed: &mut [Vec<bool>],
+    scratch: &mut DecodeScratch,
     sub_chunk_size: usize,
-    rs: &reed_solomon_erasure::ReedSolomon<galois_8::Field>,
 ) -> Result<(), ClayError> {
-    let z_vec = get_plane_vector(z, params.t, params.q);
+    let digits = geometry.plane_digits(z);
+    let u_buf = &mut scratch.u_buf;
+    let u_computed = &mut scratch.u_computed;
 
-    // Track nodes that need MDS recovery for this layer
-    let mut needs_mds: BTreeSet<usize> = erased_chunks.clone();
+    // Nodes needing MDS recovery this layer: the erasures plus any node whose
+    // companion U is not known yet
+    scratch.needs_mds.copy_from_slice(is_erased);
+    let mut mds_count = 0;
+    for &erased in is_erased {
+        if erased {
+            mds_count += 1;
+        }
+    }
 
     // Compute U values for non-erased nodes
     for x in 0..params.q {
         for y in 0..params.t {
             let node_xy = params.q * y + x;
-            let z_y = z_vec[y];
+            let z_y = digits[y];
             let node_sw = params.q * y + z_y;
-            let z_sw = get_companion_layer(params, z, x, y, z_y);
+            let z_sw = geometry.companion_layer(z, x, y, z_y);
 
-            if !erased_chunks.contains(&node_xy) {
+            if !is_erased[node_xy] {
                 if z_y == x {
                     // Red vertex: U = C (no companion needed)
                     let offset = z * sub_chunk_size;
                     u_buf[node_xy][offset..offset + sub_chunk_size]
                         .copy_from_slice(&chunks[node_xy][offset..offset + sub_chunk_size]);
                     u_computed[node_xy][z] = true;
-                } else if !erased_chunks.contains(&node_sw) {
+                } else if !is_erased[node_sw] {
                     // Both nodes available - apply PRT (only process once when z_y < x)
                     if z_y < x {
                         get_uncoupled_from_coupled(
@@ -320,7 +352,8 @@ fn decode_layered_with_tracking(
                         u_computed[node_xy][z] = true;
                     } else {
                         // Companion's U not available yet - mark for MDS
-                        needs_mds.insert(node_xy);
+                        scratch.needs_mds[node_xy] = true;
+                        mds_count += 1;
                     }
                 }
             }
@@ -328,11 +361,13 @@ fn decode_layered_with_tracking(
     }
 
     // Decode uncoupled layer using MDS
-    decode_uncoupled_layer(params, &needs_mds, z, sub_chunk_size, u_buf, rs)?;
+    decode_uncoupled_layer(params, rs, &scratch.needs_mds, mds_count, z, sub_chunk_size, u_buf)?;
 
     // Mark reconstructed nodes as computed
-    for &node in &needs_mds {
-        u_computed[node][z] = true;
+    for (node, &needed) in scratch.needs_mds.iter().enumerate() {
+        if needed {
+            u_computed[node][z] = true;
+        }
     }
 
     Ok(())
@@ -341,35 +376,42 @@ fn decode_layered_with_tracking(
 /// Decode uncoupled layer using RS MDS code
 pub fn decode_uncoupled_layer(
     params: &DecodeParams,
-    erased_chunks: &BTreeSet<usize>,
+    rs: &RsCodec,
+    is_erased: &[bool],
+    erased_count: usize,
     z: usize,
     sub_chunk_size: usize,
     u_buf: &mut [Vec<u8>],
-    rs: &reed_solomon_erasure::ReedSolomon<galois_8::Field>,
 ) -> Result<(), ClayError> {
     let offset = z * sub_chunk_size;
     let parity_start = params.original_count; // k + nu
 
-    if erased_chunks.len() > params.m {
+    if erased_count > params.m {
         return Err(ClayError::TooManyErasures {
             max: params.m,
-            actual: erased_chunks.len(),
+            actual: erased_count,
         });
     }
 
-    if erased_chunks.is_empty() {
+    if erased_count == 0 {
         return Ok(());
+    }
+
+    let mut has_erased_originals = false;
+    for &erased in &is_erased[..parity_start] {
+        if erased {
+            has_erased_originals = true;
+            break;
+        }
     }
 
     // The RS codec works directly on this layer's slice of each node buffer,
     // so nothing is copied in or out
     let mut shards: Vec<(&mut [u8], bool)> = Vec::with_capacity(u_buf.len());
     for (i, node_buf) in u_buf.iter_mut().enumerate() {
-        let is_present = !erased_chunks.contains(&i);
-        shards.push((&mut node_buf[offset..offset + sub_chunk_size], is_present));
+        shards.push((&mut node_buf[offset..offset + sub_chunk_size], !is_erased[i]));
     }
 
-    let has_erased_originals = erased_chunks.iter().any(|&i| i < parity_start);
     if has_erased_originals {
         rs.reconstruct(&mut shards).map_err(|e| {
             ClayError::ReconstructionFailed(format!("Layer {} RS reconstruct failed: {:?}", z, e))
@@ -386,33 +428,6 @@ pub fn decode_uncoupled_layer(
     }
 
     Ok(())
-}
-
-/// Get companion layer index with proper modular arithmetic
-///
-/// z_sw = (z + (x - z_y) * q^(t-1-y)) mod α
-pub fn get_companion_layer(params: &DecodeParams, z: usize, x: usize, y: usize, z_y: usize) -> usize {
-    debug_assert!(y < params.t, "y={} must be < t={}", y, params.t);
-    debug_assert!(x < params.q, "x={} must be < q={}", x, params.q);
-    debug_assert!(z_y < params.q, "z_y={} must be < q={}", z_y, params.q);
-    debug_assert!(
-        z < params.sub_chunk_no,
-        "z={} must be < α={}",
-        z,
-        params.sub_chunk_no
-    );
-
-    let alpha = params.sub_chunk_no as isize;
-    let multiplier = params.q.pow((params.t - 1 - y) as u32) as isize;
-    let diff = x as isize - z_y as isize;
-    let z_sw = ((z as isize) + diff * multiplier).rem_euclid(alpha) as usize;
-    debug_assert!(
-        z_sw < params.sub_chunk_no,
-        "z_sw out of bounds: {} >= {}",
-        z_sw,
-        params.sub_chunk_no
-    );
-    z_sw
 }
 
 /// Split two mutable node buffers out of the same slice
@@ -527,32 +542,15 @@ fn get_coupled_from_uncoupled(
     }
 }
 
-/// Set decoding order based on intersection scores
-fn set_planes_sequential_decoding_order(
-    params: &DecodeParams,
-    order: &mut [usize],
-    erasures: &BTreeSet<usize>,
-) {
-    for z in 0..params.sub_chunk_no {
-        let z_vec = get_plane_vector(z, params.t, params.q);
-        order[z] = 0;
-        for &i in erasures {
-            if i % params.q == z_vec[i / params.q] {
-                order[z] += 1;
-            }
-        }
-    }
-}
-
-/// Get maximum intersection score
-fn get_max_iscore(params: &DecodeParams, erased_chunks: &BTreeSet<usize>) -> usize {
-    let mut weight_vec = vec![false; params.t];
+/// Maximum intersection score: the number of distinct erased y-sections
+fn get_max_iscore(params: &DecodeParams, erased_nodes: &[usize]) -> usize {
+    let mut y_seen = vec![false; params.t];
     let mut iscore = 0;
 
-    for &i in erased_chunks {
-        let y = i / params.q;
-        if !weight_vec[y] {
-            weight_vec[y] = true;
+    for &node in erased_nodes {
+        let y = node / params.q;
+        if !y_seen[y] {
+            y_seen[y] = true;
             iscore += 1;
         }
     }
@@ -574,64 +572,34 @@ mod tests {
             nu: 0,
             sub_chunk_no: 8,
             original_count: 4,
-            recovery_count: 2,
         }
     }
 
-    #[test]
-    fn test_companion_layer_valid_range() {
-        let params = test_params();
-
-        for z in 0..params.sub_chunk_no {
-            let z_vec = get_plane_vector(z, params.t, params.q);
-            for y in 0..params.t {
-                for x in 0..params.q {
-                    let z_sw = get_companion_layer(&params, z, x, y, z_vec[y]);
-                    assert!(
-                        z_sw < params.sub_chunk_no,
-                        "z_sw {} out of range for z={}, x={}, y={}",
-                        z_sw,
-                        z,
-                        x,
-                        y
-                    );
-                }
-            }
-        }
+    fn test_rs(params: &DecodeParams) -> RsCodec {
+        RsCodec::new(params.original_count, params.m).expect("test params should build a codec")
     }
 
+    // decoding nothing yields nothing
     #[test]
-    fn test_decode_empty_both() {
+    fn decode_empty() {
         let params = test_params();
+        let rs = test_rs(&params);
+
         let available: HashMap<usize, Vec<u8>> = HashMap::new();
-        let result = decode(&params, &available, &[]);
+        let result = decode(&params, &rs, &available, &[]);
+
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
     }
 
+    // the score counts distinct erased y-sections
     #[test]
-    fn test_get_max_iscore() {
+    fn max_iscore() {
         let params = test_params();
 
-        // No erasures
-        let empty: BTreeSet<usize> = BTreeSet::new();
-        assert_eq!(get_max_iscore(&params, &empty), 0);
-
-        // One erasure
-        let mut one: BTreeSet<usize> = BTreeSet::new();
-        one.insert(0);
-        assert_eq!(get_max_iscore(&params, &one), 1);
-
-        // Two erasures in same y-section
-        let mut two_same: BTreeSet<usize> = BTreeSet::new();
-        two_same.insert(0);
-        two_same.insert(1);
-        assert_eq!(get_max_iscore(&params, &two_same), 1);
-
-        // Two erasures in different y-sections
-        let mut two_diff: BTreeSet<usize> = BTreeSet::new();
-        two_diff.insert(0);
-        two_diff.insert(2);
-        assert_eq!(get_max_iscore(&params, &two_diff), 2);
+        assert_eq!(get_max_iscore(&params, &[]), 0);
+        assert_eq!(get_max_iscore(&params, &[0]), 1);
+        assert_eq!(get_max_iscore(&params, &[0, 1]), 1);
+        assert_eq!(get_max_iscore(&params, &[0, 2]), 2);
     }
 }

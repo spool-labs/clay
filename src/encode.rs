@@ -2,9 +2,7 @@
 //!
 //! This module handles encoding data into Clay code chunks.
 
-use std::collections::BTreeSet;
-
-use crate::decode::decode_layered;
+use crate::decode::{decode_layered, RsCodec};
 
 /// Parameters needed for encoding
 pub struct EncodeParams {
@@ -16,18 +14,18 @@ pub struct EncodeParams {
     pub nu: usize,
     pub sub_chunk_no: usize,
     pub original_count: usize,
-    pub recovery_count: usize,
 }
 
 /// Encode data into n chunks
 ///
 /// # Parameters
 /// - `params`: Encoding parameters from ClayCode
+/// - `rs`: Reed-Solomon codec built for these parameters
 /// - `data`: Raw data bytes to encode
 ///
 /// # Returns
-/// Vector of n chunks, each containing α sub-chunks
-pub fn encode(params: &EncodeParams, data: &[u8]) -> Vec<Vec<u8>> {
+/// Vector of n chunks, each containing alpha sub-chunks
+pub fn encode(params: &EncodeParams, rs: &RsCodec, data: &[u8]) -> Vec<Vec<u8>> {
     // Calculate chunk size: must be divisible by (k * sub_chunk_no)
     // Also ensure sub_chunk_size >= 2 bytes (reed-solomon-erasure requirement)
     let min_sub_chunk_size = 2;
@@ -58,14 +56,14 @@ pub fn encode(params: &EncodeParams, data: &[u8]) -> Vec<Vec<u8>> {
     // Shortened nodes (k to k+nu-1) are already zeros - they are KNOWN zeros,
     // not erasures. We mark only parity nodes as needing computation.
     let parity_start = params.k + params.nu;
-    let mut nodes_to_compute: BTreeSet<usize> = BTreeSet::new();
-    for i in parity_start..total_nodes {
-        nodes_to_compute.insert(i);
+    let mut is_parity: Vec<bool> = vec![false; total_nodes];
+    for flag in &mut is_parity[parity_start..] {
+        *flag = true;
     }
 
     // Encode by treating parity computation as recovery
     // This should never fail for valid parameters (parity count = m <= m)
-    decode_layered(params, &nodes_to_compute, &mut chunks, sub_chunk_size)
+    decode_layered(params, rs, &is_parity, &mut chunks, sub_chunk_size)
         .expect("Encode failed: this indicates a bug in ClayCode");
 
     // Return only the k data + m parity chunks (exclude shortened nodes)
@@ -95,37 +93,47 @@ mod tests {
             nu: 0,
             sub_chunk_no: 8,
             original_count: 4,
-            recovery_count: 2,
         }
     }
 
+    fn test_rs(params: &EncodeParams) -> RsCodec {
+        RsCodec::new(params.original_count, params.m).expect("test params should build a codec")
+    }
+
+    // encoding yields exactly n chunks
     #[test]
-    fn test_encode_produces_correct_chunk_count() {
+    fn chunk_count() {
         let params = test_params();
-        let data = b"Test data for encoding";
-        let chunks = encode(&params, data);
+        let rs = test_rs(&params);
+
+        let chunks = encode(&params, &rs, b"Test data for encoding");
+
         assert_eq!(chunks.len(), params.n);
     }
 
+    // empty input still produces n equally sized chunks
     #[test]
-    fn test_encode_empty_data() {
+    fn empty_data() {
         let params = test_params();
-        let chunks = encode(&params, &[]);
+        let rs = test_rs(&params);
+
+        let chunks = encode(&params, &rs, &[]);
+
         assert_eq!(chunks.len(), params.n);
-        // All chunks should have same size
         let chunk_size = chunks[0].len();
         for chunk in &chunks {
             assert_eq!(chunk.len(), chunk_size);
         }
     }
 
+    // chunk sizes divide evenly into sub-chunks
     #[test]
-    fn test_encode_chunk_alignment() {
+    fn chunk_alignment() {
         let params = test_params();
-        let data = vec![0xABu8; 100];
-        let chunks = encode(&params, &data);
+        let rs = test_rs(&params);
 
-        // Chunk size should be divisible by sub_chunk_no
+        let chunks = encode(&params, &rs, &vec![0xABu8; 100]);
+
         for chunk in &chunks {
             assert_eq!(chunk.len() % params.sub_chunk_no, 0);
         }
