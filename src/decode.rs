@@ -6,15 +6,12 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use reed_solomon_erasure::galois_8::{self, add as gf_add, mul as gf_mul};
+use reed_solomon_erasure::galois_8;
 
 use crate::coords::get_plane_vector;
 use crate::encode::EncodeParams;
 use crate::error::ClayError;
-use crate::transforms::{
-    compute_c_from_u_and_cstar, compute_u_from_c_and_ustar, pft_compute_both, prt_compute_both,
-    GAMMA,
-};
+use crate::transforms::{compute_c_into, compute_u_into, pft_into, prt_into};
 
 /// Parameters needed for decoding (same as encode for now)
 pub type DecodeParams = EncodeParams;
@@ -311,13 +308,15 @@ fn decode_layered_with_tracking(
                     // Companion is erased - check if companion's U* is available
                     // from a previous iteration (lower intersection score layer)
                     if u_computed[node_sw][z_sw] {
-                        // Use U = det*C + γ*U* to compute U from C and known U*
+                        // U = det*C + gamma*U* recovers U from C and the known U*
                         let offset_z = z * sub_chunk_size;
                         let offset_zsw = z_sw * sub_chunk_size;
-                        let c_xy = &chunks[node_xy][offset_z..offset_z + sub_chunk_size];
-                        let u_sw = &u_buf[node_sw][offset_zsw..offset_zsw + sub_chunk_size];
-                        let u_xy = compute_u_from_c_and_ustar(c_xy, u_sw);
-                        u_buf[node_xy][offset_z..offset_z + sub_chunk_size].copy_from_slice(&u_xy);
+                        let (u_xy_buf, u_sw_buf) = pair_mut(u_buf, node_xy, node_sw);
+                        compute_u_into(
+                            &chunks[node_xy][offset_z..offset_z + sub_chunk_size],
+                            &u_sw_buf[offset_zsw..offset_zsw + sub_chunk_size],
+                            &mut u_xy_buf[offset_z..offset_z + sub_chunk_size],
+                        );
                         u_computed[node_xy][z] = true;
                     } else {
                         // Companion's U not available yet - mark for MDS
@@ -416,6 +415,24 @@ pub fn get_companion_layer(params: &DecodeParams, z: usize, x: usize, y: usize, 
     z_sw
 }
 
+/// Split two mutable node buffers out of the same slice
+///
+/// The coupled pair always names two distinct nodes, so the split is safe.
+pub fn pair_mut(
+    buffers: &mut [Vec<u8>],
+    first: usize,
+    second: usize,
+) -> (&mut Vec<u8>, &mut Vec<u8>) {
+    debug_assert_ne!(first, second);
+    if first < second {
+        let (left, right) = buffers.split_at_mut(second);
+        (&mut left[first], &mut right[0])
+    } else {
+        let (left, right) = buffers.split_at_mut(first);
+        (&mut right[0], &mut left[second])
+    }
+}
+
 /// Get uncoupled values from coupled values using PRT
 fn get_uncoupled_from_coupled(
     params: &DecodeParams,
@@ -437,16 +454,16 @@ fn get_uncoupled_from_coupled(
     let c_xy = &chunks[node_xy][offset_z..offset_z + sub_chunk_size];
     let c_sw = &chunks[node_sw][offset_zsw..offset_zsw + sub_chunk_size];
 
-    // Determine which is C and which is C* based on x vs z_y
-    let (u_xy, u_sw) = if x < z_y {
-        prt_compute_both(c_xy, c_sw)
-    } else {
-        let (u_sw, u_xy) = prt_compute_both(c_sw, c_xy);
-        (u_xy, u_sw)
-    };
+    let (u_xy_buf, u_sw_buf) = pair_mut(u_buf, node_xy, node_sw);
+    let u_xy = &mut u_xy_buf[offset_z..offset_z + sub_chunk_size];
+    let u_sw = &mut u_sw_buf[offset_zsw..offset_zsw + sub_chunk_size];
 
-    u_buf[node_xy][offset_z..offset_z + sub_chunk_size].copy_from_slice(&u_xy);
-    u_buf[node_sw][offset_zsw..offset_zsw + sub_chunk_size].copy_from_slice(&u_sw);
+    // The lower x coordinate of the pair holds C, the other C*
+    if x < z_y {
+        prt_into(c_xy, c_sw, u_xy, u_sw);
+    } else {
+        prt_into(c_sw, c_xy, u_sw, u_xy);
+    }
 }
 
 /// Recover type 1 erasure (companion not erased)
@@ -467,13 +484,14 @@ fn recover_type1_erasure(
     let offset_z = z * sub_chunk_size;
     let offset_zsw = z_sw * sub_chunk_size;
 
-    let c_sw = &chunks[node_sw][offset_zsw..offset_zsw + sub_chunk_size];
     let u_xy = &u_buf[node_xy][offset_z..offset_z + sub_chunk_size];
 
-    // Compute C from U and C*
-    let c_xy = compute_c_from_u_and_cstar(u_xy, c_sw);
-
-    chunks[node_xy][offset_z..offset_z + sub_chunk_size].copy_from_slice(&c_xy);
+    let (c_xy_buf, c_sw_buf) = pair_mut(chunks, node_xy, node_sw);
+    compute_c_into(
+        u_xy,
+        &c_sw_buf[offset_zsw..offset_zsw + sub_chunk_size],
+        &mut c_xy_buf[offset_z..offset_z + sub_chunk_size],
+    );
 }
 
 /// Get coupled values from uncoupled values using PFT
@@ -497,16 +515,16 @@ fn get_coupled_from_uncoupled(
     let u_xy = &u_buf[node_xy][offset_z..offset_z + sub_chunk_size];
     let u_sw = &u_buf[node_sw][offset_zsw..offset_zsw + sub_chunk_size];
 
-    // PFT: compute C from U pair
-    let (c_xy, c_sw) = if x < z_y {
-        pft_compute_both(u_xy, u_sw)
-    } else {
-        let (c_sw, c_xy) = pft_compute_both(u_sw, u_xy);
-        (c_xy, c_sw)
-    };
+    let (c_xy_buf, c_sw_buf) = pair_mut(chunks, node_xy, node_sw);
+    let c_xy = &mut c_xy_buf[offset_z..offset_z + sub_chunk_size];
+    let c_sw = &mut c_sw_buf[offset_zsw..offset_zsw + sub_chunk_size];
 
-    chunks[node_xy][offset_z..offset_z + sub_chunk_size].copy_from_slice(&c_xy);
-    chunks[node_sw][offset_zsw..offset_zsw + sub_chunk_size].copy_from_slice(&c_sw);
+    // The lower x coordinate of the pair holds U, the other U*
+    if x < z_y {
+        pft_into(u_xy, u_sw, c_xy, c_sw);
+    } else {
+        pft_into(u_sw, u_xy, c_sw, c_xy);
+    }
 }
 
 /// Set decoding order based on intersection scores
@@ -540,21 +558,6 @@ fn get_max_iscore(params: &DecodeParams, erased_chunks: &BTreeSet<usize>) -> usi
     }
 
     iscore
-}
-
-/// Compute C* from C and U (for repair)
-///
-/// companion_value = (U + C) / γ
-pub fn compute_cstar_from_c_and_u(c_helper: &[u8], u_helper: &[u8]) -> Vec<u8> {
-    let len = c_helper.len();
-    let mut companion_c = vec![0u8; len];
-    let gamma_inv = crate::transforms::gf_inv(GAMMA);
-
-    for i in 0..len {
-        companion_c[i] = gf_mul(gf_add(u_helper[i], c_helper[i]), gamma_inv);
-    }
-
-    companion_c
 }
 
 #[cfg(test)]

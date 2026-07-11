@@ -9,9 +9,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::checked_pow;
 use crate::coords::get_plane_vector;
-use crate::decode::{compute_cstar_from_c_and_u, decode_uncoupled_layer, get_companion_layer, DecodeParams};
+use crate::decode::{decode_uncoupled_layer, get_companion_layer, pair_mut, DecodeParams};
 use crate::error::ClayError;
-use crate::transforms::{compute_u_from_c_and_ustar, prt_compute_both_oriented};
+use crate::transforms::{compute_cstar_into, compute_u_into, prt_into};
 
 /// Parameters needed for repair (alias to DecodeParams)
 pub type RepairParams = DecodeParams;
@@ -330,13 +330,16 @@ pub fn repair(
                                     let c_offset = repair_plane_to_ind[&z] * sub_chunk_size;
                                     let c_xy =
                                         &helper_chunk[c_offset..c_offset + sub_chunk_size];
-                                    let u_sw = &u_buf[node_sw]
-                                        [z_sw * sub_chunk_size..(z_sw + 1) * sub_chunk_size];
 
-                                    // Compute U from C and U* using PFT relationship
-                                    let u_xy = compute_u_from_c_and_ustar(c_xy, u_sw);
-                                    u_buf[node_xy][z * sub_chunk_size..(z + 1) * sub_chunk_size]
-                                        .copy_from_slice(&u_xy);
+                                    let (u_xy_buf, u_sw_buf) =
+                                        pair_mut(&mut u_buf, node_xy, node_sw);
+                                    compute_u_into(
+                                        c_xy,
+                                        &u_sw_buf
+                                            [z_sw * sub_chunk_size..(z_sw + 1) * sub_chunk_size],
+                                        &mut u_xy_buf
+                                            [z * sub_chunk_size..(z + 1) * sub_chunk_size],
+                                    );
                                     u_computed[node_xy][z] = true;
                                 } else {
                                     // Companion's U not available - mark this node as needing MDS
@@ -352,14 +355,19 @@ pub fn repair(
                                     let c_sw =
                                         &helper_sw[c_sw_offset..c_sw_offset + sub_chunk_size];
 
-                                    // PRT: compute U from C pair using correct orientation
-                                    let (u_xy, u_sw_val) =
-                                        prt_compute_both_oriented(c_xy, c_sw, x < z_y);
-                                    u_buf[node_xy][z * sub_chunk_size..(z + 1) * sub_chunk_size]
-                                        .copy_from_slice(&u_xy);
-                                    u_buf[node_sw]
-                                        [z_sw * sub_chunk_size..(z_sw + 1) * sub_chunk_size]
-                                        .copy_from_slice(&u_sw_val);
+                                    let (u_xy_buf, u_sw_buf) =
+                                        pair_mut(&mut u_buf, node_xy, node_sw);
+                                    let u_xy = &mut u_xy_buf
+                                        [z * sub_chunk_size..(z + 1) * sub_chunk_size];
+                                    let u_sw = &mut u_sw_buf
+                                        [z_sw * sub_chunk_size..(z_sw + 1) * sub_chunk_size];
+
+                                    // The lower x coordinate of the pair holds C, the other C*
+                                    if x < z_y {
+                                        prt_into(c_xy, c_sw, u_xy, u_sw);
+                                    } else {
+                                        prt_into(c_sw, c_xy, u_sw, u_xy);
+                                    }
                                     u_computed[node_xy][z] = true;
                                     u_computed[node_sw][z_sw] = true;
                                 }
@@ -407,10 +415,12 @@ pub fn repair(
                         let c_node = &helper_chunk[c_offset..c_offset + sub_chunk_size];
                         let u_node = &u_buf[node][z * sub_chunk_size..(z + 1) * sub_chunk_size];
 
-                        // Compute C* (lost node's C at z_sw) from C and U
-                        let c_lost = compute_cstar_from_c_and_u(c_node, u_node);
-                        recovered[z_sw * sub_chunk_size..(z_sw + 1) * sub_chunk_size]
-                            .copy_from_slice(&c_lost);
+                        // The helper's C and U pin down the lost node's C at z_sw
+                        compute_cstar_into(
+                            c_node,
+                            u_node,
+                            &mut recovered[z_sw * sub_chunk_size..(z_sw + 1) * sub_chunk_size],
+                        );
                     }
                 }
             }
