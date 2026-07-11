@@ -207,11 +207,14 @@ pub fn repair(
 
     let geometry = LayerGeometry::new(params.q, params.t, params.sub_chunk_no);
 
-    // Initialize U buffers for all nodes
-    let mut u_buf: Vec<Vec<u8>> = vec![vec![0u8; chunk_size]; total_nodes];
+    // Repair only ever touches the beta repair planes (their companions are
+    // repair planes too), so the U scratch is packed densely by plane position
+    // instead of being allocated for all alpha layers
+    let beta = repair_sub_chunk_indices.len();
+    let mut u_buf: Vec<Vec<u8>> = vec![vec![0u8; beta * sub_chunk_size]; total_nodes];
 
     // Track which U values have been computed (for dependency checking)
-    let mut u_computed: Vec<Vec<bool>> = vec![vec![false; params.sub_chunk_no]; total_nodes];
+    let mut u_computed: Vec<bool> = vec![false; total_nodes * beta];
 
     // Create recovered data buffer
     let mut recovered = vec![0u8; chunk_size];
@@ -341,40 +344,44 @@ pub fn repair(
 
                     if z_y == x {
                         // Red vertex: U = C
-                        u_buf[node_xy][z * sub_chunk_size..(z + 1) * sub_chunk_size]
+                        u_buf[node_xy][plane_offset..plane_offset + sub_chunk_size]
                             .copy_from_slice(
                                 &helper_chunk[plane_offset..plane_offset + sub_chunk_size],
                             );
-                        u_computed[node_xy][z] = true;
+                        u_computed[node_xy * beta + position] = true;
                     } else if is_aloof[node_sw] {
-                        // Companion is aloof - need U* from previous iteration
-                        if u_computed[node_sw][z_sw] {
-                            let c_xy = &helper_chunk[plane_offset..plane_offset + sub_chunk_size];
+                        // Companion is aloof - its U* must come from an earlier plane
+                        match plane_position[z_sw] {
+                            Some(sw_position) if u_computed[node_sw * beta + sw_position] => {
+                                let c_xy =
+                                    &helper_chunk[plane_offset..plane_offset + sub_chunk_size];
+                                let sw_offset = sw_position * sub_chunk_size;
 
-                            let (u_xy_buf, u_sw_buf) = pair_mut(&mut u_buf, node_xy, node_sw);
-                            compute_u_into(
-                                c_xy,
-                                &u_sw_buf[z_sw * sub_chunk_size..(z_sw + 1) * sub_chunk_size],
-                                &mut u_xy_buf[z * sub_chunk_size..(z + 1) * sub_chunk_size],
-                            );
-                            u_computed[node_xy][z] = true;
-                        } else {
-                            // Companion's U not available - mark this node as needing MDS
-                            layer_erased[node_xy] = true;
-                            layer_count += 1;
+                                let (u_xy_buf, u_sw_buf) = pair_mut(&mut u_buf, node_xy, node_sw);
+                                compute_u_into(
+                                    c_xy,
+                                    &u_sw_buf[sw_offset..sw_offset + sub_chunk_size],
+                                    &mut u_xy_buf[plane_offset..plane_offset + sub_chunk_size],
+                                );
+                                u_computed[node_xy * beta + position] = true;
+                            }
+                            Some(_) | None => {
+                                // Companion's U not available - mark this node as needing MDS
+                                layer_erased[node_xy] = true;
+                                layer_count += 1;
+                            }
                         }
                     } else if let (Some(helper_sw), Some(sw_position)) =
                         (helper_slices[node_sw], plane_position[z_sw])
                     {
                         // Both nodes are helpers with the companion plane on hand - use PRT
-                        let c_sw_offset = sw_position * sub_chunk_size;
+                        let sw_offset = sw_position * sub_chunk_size;
                         let c_xy = &helper_chunk[plane_offset..plane_offset + sub_chunk_size];
-                        let c_sw = &helper_sw[c_sw_offset..c_sw_offset + sub_chunk_size];
+                        let c_sw = &helper_sw[sw_offset..sw_offset + sub_chunk_size];
 
                         let (u_xy_buf, u_sw_buf) = pair_mut(&mut u_buf, node_xy, node_sw);
-                        let u_xy = &mut u_xy_buf[z * sub_chunk_size..(z + 1) * sub_chunk_size];
-                        let u_sw =
-                            &mut u_sw_buf[z_sw * sub_chunk_size..(z_sw + 1) * sub_chunk_size];
+                        let u_xy = &mut u_xy_buf[plane_offset..plane_offset + sub_chunk_size];
+                        let u_sw = &mut u_sw_buf[sw_offset..sw_offset + sub_chunk_size];
 
                         // The lower x coordinate of the pair holds C, the other C*
                         if x < z_y {
@@ -382,8 +389,8 @@ pub fn repair(
                         } else {
                             prt_into(c_sw, c_xy, u_sw, u_xy);
                         }
-                        u_computed[node_xy][z] = true;
-                        u_computed[node_sw][z_sw] = true;
+                        u_computed[node_xy * beta + position] = true;
+                        u_computed[node_sw * beta + sw_position] = true;
                     } else if helper_slices[node_sw].is_none() {
                         // No way to compute U - mark for MDS
                         layer_erased[node_xy] = true;
@@ -399,12 +406,13 @@ pub fn repair(
                 &layer_erased,
                 layer_count,
                 z,
+                plane_offset,
                 sub_chunk_size,
                 &mut u_buf,
             )?;
-            for node in 0..total_nodes {
-                if layer_erased[node] {
-                    u_computed[node][z] = true;
+            for (node, &erased) in layer_erased.iter().enumerate() {
+                if erased {
+                    u_computed[node * beta + position] = true;
                 }
             }
 
@@ -424,14 +432,14 @@ pub fn repair(
                     // Red vertex: C = U
                     if node == lost_internal {
                         recovered[z * sub_chunk_size..(z + 1) * sub_chunk_size].copy_from_slice(
-                            &u_buf[node][z * sub_chunk_size..(z + 1) * sub_chunk_size],
+                            &u_buf[node][plane_offset..plane_offset + sub_chunk_size],
                         );
                     }
                 } else if node_sw == lost_internal {
                     // node is a helper in y-section, its companion is the lost node
                     if let Some(helper_chunk) = helper_slices[node] {
                         let c_node = &helper_chunk[plane_offset..plane_offset + sub_chunk_size];
-                        let u_node = &u_buf[node][z * sub_chunk_size..(z + 1) * sub_chunk_size];
+                        let u_node = &u_buf[node][plane_offset..plane_offset + sub_chunk_size];
 
                         // The helper's C and U pin down the lost node's C at z_sw
                         compute_cstar_into(

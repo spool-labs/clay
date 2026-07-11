@@ -39,40 +39,52 @@ pub fn encode(params: &EncodeParams, rs: &RsCodec, data: &[u8]) -> Vec<Vec<u8>> 
     let chunk_size = padded_len / params.k;
     let sub_chunk_size = chunk_size / params.sub_chunk_no;
 
-    // Initialize all chunks (k data + nu shortened + m parity)
     let total_nodes = params.q * params.t; // k + m + nu
-    let mut chunks: Vec<Vec<u8>> = vec![vec![0u8; chunk_size]; total_nodes];
+    let parity_start = params.k + params.nu;
 
-    // Split data across the first k nodes; the zeroed tail is the padding
+    // Owned data rows for the first k nodes; the zeroed tail is the padding
+    let mut data_rows: Vec<Vec<u8>> = vec![vec![0u8; chunk_size]; params.k];
     for i in 0..params.k {
         let start = i * chunk_size;
         if start >= data.len() {
             break;
         }
         let end = data.len().min(start + chunk_size);
-        chunks[i][..end - start].copy_from_slice(&data[start..end]);
+        data_rows[i][..end - start].copy_from_slice(&data[start..end]);
     }
 
-    // Shortened nodes (k to k+nu-1) are already zeros - they are KNOWN zeros,
-    // not erasures. We mark only parity nodes as needing computation.
-    let parity_start = params.k + params.nu;
-    let mut is_parity: Vec<bool> = vec![false; total_nodes];
-    for flag in &mut is_parity[parity_start..] {
-        *flag = true;
+    // Data rows are available, shortened nodes share one known-zero row, and
+    // parity rows are left as erasures for the layered decoder to fill in
+    let zero_row = vec![0u8; chunk_size];
+    let mut available_rows: Vec<Option<&[u8]>> = vec![None; total_nodes];
+    for i in 0..params.k {
+        available_rows[i] = Some(&data_rows[i]);
+    }
+    for i in params.k..parity_start {
+        available_rows[i] = Some(&zero_row);
+    }
+
+    let mut erased_rows: Vec<Vec<u8>> = Vec::with_capacity(total_nodes);
+    for node in 0..total_nodes {
+        if node < parity_start {
+            erased_rows.push(Vec::new());
+        } else {
+            erased_rows.push(vec![0u8; chunk_size]);
+        }
     }
 
     // Encode by treating parity computation as recovery
     // This should never fail for valid parameters (parity count = m <= m)
-    decode_layered(params, rs, &is_parity, &mut chunks, sub_chunk_size)
+    decode_layered(params, rs, &available_rows, &mut erased_rows, sub_chunk_size)
         .expect("Encode failed: this indicates a bug in ClayCode");
 
-    // Return only the k data + m parity chunks (exclude shortened nodes)
+    // Return the k data + m parity chunks (shortened nodes stay internal)
     let mut result = Vec::with_capacity(params.n);
-    for i in 0..params.k {
-        result.push(std::mem::take(&mut chunks[i]));
+    for row in data_rows {
+        result.push(row);
     }
-    for i in (params.k + params.nu)..total_nodes {
-        result.push(std::mem::take(&mut chunks[i]));
+    for node in parity_start..total_nodes {
+        result.push(std::mem::take(&mut erased_rows[node]));
     }
 
     result
