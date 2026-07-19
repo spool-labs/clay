@@ -50,7 +50,7 @@ pub use error::ClayError;
 
 const MAX_RS_SHARDS: usize = 32768;
 
-use decode::decode as decode_chunks;
+use decode::{decode as decode_chunks, RsCodec};
 use encode::encode as encode_chunks;
 use repair::{minimum_to_repair as min_repair, repair as repair_chunk};
 
@@ -77,8 +77,8 @@ pub struct ClayCode {
     pub beta: usize,
     /// Number of original shards for RS (k + nu)
     original_count: usize,
-    /// Number of recovery shards for RS (m)
-    recovery_count: usize,
+    /// Reed-Solomon codec reused by every encode, decode, and repair call
+    rs: RsCodec,
 }
 
 impl ClayCode {
@@ -131,6 +131,9 @@ impl ClayCode {
             ));
         }
 
+        let rs = RsCodec::new(original_count, recovery_count)
+            .map_err(|e| ClayError::InvalidParameters(format!("RS init failed: {:?}", e)))?;
+
         Ok(ClayCode {
             k,
             m,
@@ -142,7 +145,7 @@ impl ClayCode {
             sub_chunk_no,
             beta,
             original_count,
-            recovery_count,
+            rs,
         })
     }
 
@@ -162,7 +165,6 @@ impl ClayCode {
             nu: self.nu,
             sub_chunk_no: self.sub_chunk_no,
             original_count: self.original_count,
-            recovery_count: self.recovery_count,
         }
     }
 
@@ -174,7 +176,7 @@ impl ClayCode {
     /// # Returns
     /// Vector of n chunks, each containing α sub-chunks
     pub fn encode(&self, data: &[u8]) -> Vec<Vec<u8>> {
-        encode_chunks(&self.encode_params(), data)
+        encode_chunks(&self.encode_params(), &self.rs, data)
     }
 
     /// Decode data from available chunks
@@ -190,7 +192,7 @@ impl ClayCode {
         available: &HashMap<usize, Vec<u8>>,
         erasures: &[usize],
     ) -> Result<Vec<u8>, ClayError> {
-        decode_chunks(&self.encode_params(), available, erasures)
+        decode_chunks(&self.encode_params(), &self.rs, available, erasures)
     }
 
     /// Determine minimum sub-chunks needed to repair a lost node
@@ -229,7 +231,7 @@ impl ClayCode {
         helper_data: &HashMap<usize, Vec<u8>>,
         chunk_size: usize,
     ) -> Result<Vec<u8>, ClayError> {
-        repair_chunk(&self.encode_params(), lost_node, helper_data, chunk_size)
+        repair_chunk(&self.encode_params(), &self.rs, lost_node, helper_data, chunk_size)
     }
 
     /// Calculate normalized repair bandwidth
