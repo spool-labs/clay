@@ -144,7 +144,7 @@ pub fn compute_cstar_into(c: &[u8], u: &[u8], c_star: &mut [u8]) {
 mod tests {
     use super::*;
 
-    use reed_solomon_erasure::galois_8::{add as gf_add, div as gf_div, mul as gf_mul};
+    use tape_reed_solomon::galois::{add as gf_add, div as gf_div, mul as gf_mul};
 
     // determinant of the coupling matrix
     const DET: u8 = 5;

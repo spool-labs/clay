@@ -10,18 +10,26 @@ use rand::rngs::StdRng;
 use std::collections::HashMap;
 
 /// Parameter configurations to test: (k, m, d)
+///
+/// The trailing comment gives the internal RS shape clay builds, `RS(k+nu, m)`,
+/// and the tape encode route it takes. Only the production shape (7,13) is in
+/// tape's `GENERATED_SHAPES`, so it is the only config that can reach the
+/// generated FFT encode kernels; the rest ride the fused-matrix path.
 const CONFIGS: &[(usize, usize, usize)] = &[
-    (4, 2, 5),   // Small: n=6, α=8
-    (6, 3, 8),   // Medium: n=9, α=27
-    (10, 4, 13), // Large: n=14, α=256
+    (4, 2, 5),    // (n,k,d)=(6,4,5)    RS(4,2)   fused-matrix
+    (6, 3, 8),    // (n,k,d)=(9,6,8)    RS(6,3)   fused-matrix
+    (10, 4, 13),  // (n,k,d)=(14,10,13) RS(12,4)  fused-matrix
+    (7, 13, 16),  // (n,k,d)=(20,7,16)  RS(7,13)  fft-generated (production shape)
 ];
 
 /// Data sizes to test (in bytes)
 const DATA_SIZES: &[usize] = &[
-    1024,        // 1 KB
-    10 * 1024,   // 10 KB
-    100 * 1024,  // 100 KB
-    1024 * 1024, // 1 MB
+    1024,            // 1 KB
+    10 * 1024,       // 10 KB
+    100 * 1024,      // 100 KB
+    1024 * 1024,     // 1 MB
+    4 * 1024 * 1024, // 4 MiB — large enough that the production shape's
+                     // per-sub-chunk length clears STRIP and routes fft-generated
 ];
 
 fn generate_data(size: usize, seed: u64) -> Vec<u8> {

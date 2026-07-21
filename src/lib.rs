@@ -50,9 +50,9 @@ pub use error::ClayError;
 
 const MAX_RS_SHARDS: usize = 32768;
 
-use decode::{decode as decode_chunks, RsCodec};
+use decode::{decode as decode_chunks, decode_rows as decode_rows_impl, RsCodec};
 use encode::encode as encode_chunks;
-use repair::{minimum_to_repair as min_repair, repair as repair_chunk};
+use repair::{minimum_to_repair as min_repair, repair as repair_chunk, repair_rows as repair_rows_impl};
 
 /// Clay (Coupled-Layer) erasure code
 #[derive(Clone, Debug)]
@@ -195,6 +195,14 @@ impl ClayCode {
         decode_chunks(&self.encode_params(), &self.rs, available, erasures)
     }
 
+    /// Recover original data from chunks indexed by node, `None` for erasures
+    ///
+    /// The zero-copy form of decode. The caller lends the chunks it already
+    /// holds instead of building a map of owned buffers. Needs exactly n slots.
+    pub fn decode_rows(&self, chunks: &[Option<&[u8]>]) -> Result<Vec<u8>, ClayError> {
+        decode_rows_impl(&self.encode_params(), &self.rs, chunks)
+    }
+
     /// Determine minimum sub-chunks needed to repair a lost node
     ///
     /// # Parameters
@@ -232,6 +240,20 @@ impl ClayCode {
         chunk_size: usize,
     ) -> Result<Vec<u8>, ClayError> {
         repair_chunk(&self.encode_params(), &self.rs, lost_node, helper_data, chunk_size)
+    }
+
+    /// Repair a lost chunk from helper partials indexed by node
+    ///
+    /// The zero-copy form of repair. One slot per node, `None` where a node is
+    /// not contributing, and each entry holds that helper's sub-chunks in the
+    /// order minimum_to_repair returned them.
+    pub fn repair_rows(
+        &self,
+        lost_node: usize,
+        helpers: &[Option<&[u8]>],
+        chunk_size: usize,
+    ) -> Result<Vec<u8>, ClayError> {
+        repair_rows_impl(&self.encode_params(), &self.rs, lost_node, helpers, chunk_size)
     }
 
     /// Calculate normalized repair bandwidth

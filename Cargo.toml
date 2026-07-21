@@ -1,8 +1,7 @@
 [package]
 name = "clay-codes"
-version = "0.1.3"
+version = "0.2.1"
 edition = "2021"
-rust-version = "1.65"
 description = "Clay (Coupled-Layer) erasure codes - MSR codes with optimal repair bandwidth"
 license = "Apache-2.0"
 repository = "https://github.com/spool-labs/clay"
@@ -12,11 +11,18 @@ readme = "README.md"
 keywords = ["erasure-codes", "msr", "repair", "distributed-storage", "reed-solomon"]
 categories = ["algorithms", "encoding"]
 
-[target.'cfg(not(target_family = "wasm"))'.dependencies]
-reed-solomon-erasure = { version = "6.0", features = ["simd-accel"] }
+[dependencies]
+tape-reed-solomon = { version = "0.2", default-features = false }
 
-[target.'cfg(target_family = "wasm")'.dependencies]
-reed-solomon-erasure = { version = "6.0", default-features = false }
+[features]
+# Forward the tape-reed-solomon kernel selectors. Enabling none keeps the
+# default runtime CPU dispatch, so the crate stays portable across arches.
+scalar = ["tape-reed-solomon/scalar"]
+ssse3 = ["tape-reed-solomon/ssse3"]
+avx2 = ["tape-reed-solomon/avx2"]
+avx512 = ["tape-reed-solomon/avx512"]
+gfni = ["tape-reed-solomon/gfni"]
+neon = ["tape-reed-solomon/neon"]
 
 [dev-dependencies]
 rand = "0.8"
@@ -25,3 +31,4 @@ criterion = "0.5"
 [[bench]]
 name = "clay_bench"
 harness = false
+
