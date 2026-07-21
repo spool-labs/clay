@@ -18,7 +18,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-clay-codes = "0.1"
+clay-codes = "0.2"
 ```
 
 ### Encode and Decode
