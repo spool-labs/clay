@@ -27,7 +27,8 @@ pub struct EncodeParams {
 /// Vector of n chunks, each containing alpha sub-chunks
 pub fn encode(params: &EncodeParams, rs: &RsCodec, data: &[u8]) -> Vec<Vec<u8>> {
     // Calculate chunk size: must be divisible by (k * sub_chunk_no)
-    // Also ensure sub_chunk_size >= 2 bytes (reed-solomon-erasure requirement)
+    // The 2-byte sub-chunk floor sets the padded length and therefore the
+    // encoded layout, so it is part of the wire format and must not change.
     let min_sub_chunk_size = 2;
     let min_size = params.k * params.sub_chunk_no * min_sub_chunk_size;
     let padded_len = if data.is_empty() {
