@@ -12,7 +12,7 @@ keywords = ["erasure-codes", "msr", "repair", "distributed-storage", "reed-solom
 categories = ["algorithms", "encoding"]
 
 [dependencies]
-tape-reed-solomon = { version = "0.2", path = "../tape-reed-solomon", default-features = false }
+tape-reed-solomon = { version = "0.2", default-features = false }
 
 [features]
 # Forward the tape-reed-solomon kernel selectors. Enabling none keeps the
