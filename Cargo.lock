@@ -484,6 +484,8 @@ dependencies = [
 [[package]]
 name = "tape-reed-solomon"
 version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23cce0f8ff0168bf9757a8f45abf2f02e78e7bea099c13e780f1a42d819df2e2"
 
 [[package]]
 name = "tinytemplate"
