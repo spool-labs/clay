@@ -6,8 +6,7 @@
 
 use std::collections::HashMap;
 
-use reed_solomon_erasure::galois_8;
-use reed_solomon_erasure::ReedSolomon;
+use tape_reed_solomon::ReedSolomon;
 
 use crate::coords::LayerGeometry;
 use crate::encode::EncodeParams;
@@ -18,7 +17,7 @@ use crate::transforms::{compute_c_into, compute_u_into, pft_into, prt_into};
 pub type DecodeParams = EncodeParams;
 
 /// The GF(2^8) Reed-Solomon codec shared across all layers
-pub type RsCodec = ReedSolomon<galois_8::Field>;
+pub type RsCodec = ReedSolomon;
 
 /// Scratch buffers shared by every layer of one decode call
 struct DecodeScratch {
@@ -135,6 +134,66 @@ pub fn decode(
         }
     }
 
+    // Hand off to the slice path. Everything above was checking the map
+    // against erasures, which the slice form makes unrepresentable.
+    let mut chunks: Vec<Option<&[u8]>> = vec![None; params.n];
+    for (&idx, data) in available.iter() {
+        chunks[idx] = Some(data.as_slice());
+    }
+    decode_rows(params, rs, &chunks)
+}
+
+/// Recover original data from chunks indexed by node, `None` marking erasures
+///
+/// This is the shape the layered decoder already works from, so callers that
+/// hold borrowed chunks skip the map and the owned buffer per node that decode
+/// needs.
+pub fn decode_rows(
+    params: &DecodeParams,
+    rs: &RsCodec,
+    chunks: &[Option<&[u8]>],
+) -> Result<Vec<u8>, ClayError> {
+    if chunks.len() != params.n {
+        return Err(ClayError::InvalidParameters(format!(
+            "Expected {} chunk slots (n), got {}",
+            params.n,
+            chunks.len()
+        )));
+    }
+
+    let Some(chunk_size) = chunks.iter().flatten().map(|chunk| chunk.len()).next() else {
+        return Err(ClayError::InvalidParameters(
+            "No available chunks provided".into(),
+        ));
+    };
+    if chunk_size == 0 || chunk_size % params.sub_chunk_no != 0 {
+        return Err(ClayError::InvalidChunkSize {
+            expected: params.sub_chunk_no,
+            actual: chunk_size,
+        });
+    }
+
+    let mut erased_count = 0usize;
+    for (idx, slot) in chunks.iter().enumerate() {
+        match slot {
+            Some(chunk) if chunk.len() != chunk_size => {
+                return Err(ClayError::InconsistentChunkSizes {
+                    first_size: chunk_size,
+                    mismatched_idx: idx,
+                    mismatched_size: chunk.len(),
+                })
+            }
+            Some(_) => {}
+            None => erased_count += 1,
+        }
+    }
+    if erased_count > params.m {
+        return Err(ClayError::TooManyErasures {
+            max: params.m,
+            actual: erased_count,
+        });
+    }
+
     let sub_chunk_size = chunk_size / params.sub_chunk_no;
     let total_nodes = params.q * params.t;
 
@@ -155,9 +214,9 @@ pub fn decode(
         } else {
             internal_idx - params.nu
         };
-        match available.get(&external_idx) {
+        match chunks[external_idx] {
             Some(data) => {
-                available_rows[internal_idx] = Some(data.as_slice());
+                available_rows[internal_idx] = Some(data);
                 erased_rows.push(Vec::new());
             }
             None => erased_rows.push(vec![0u8; chunk_size]),
@@ -226,13 +285,21 @@ pub fn decode_layered(
         layers_by_iscore[iscore].push(z);
     }
 
+    // One entry per layer in the current pass: (z, erasure set, count)
+    let mut layer_patterns: Vec<(usize, Vec<bool>, usize)> = Vec::with_capacity(alpha);
+
     // Process layers in order of increasing intersection score
     for layers in &layers_by_iscore {
-        // First pass: decode erasures for layers with this iscore
+        if layers.is_empty() {
+            continue;
+        }
+
+        // First pass: recover U for every layer in this pass before any RS
+        // call, so the pass can merge its calls
+        layer_patterns.clear();
         for &z in layers {
-            decode_layered_with_tracking(
+            let mds_count = compute_layer_u(
                 params,
-                rs,
                 &geometry,
                 &is_erased,
                 z,
@@ -240,6 +307,64 @@ pub fn decode_layered(
                 &mut scratch,
                 sub_chunk_size,
             )?;
+            layer_patterns.push((z, scratch.needs_mds.clone(), mds_count));
+        }
+
+        // Layers in a pass are independent and share one erasure set, and RS
+        // over GF(2^8) is byte-column independent, so a contiguous run of
+        // layers decodes exactly as those layers would one at a time
+        let is_uniform = layer_patterns.windows(2).all(|pair| pair[0].1 == pair[1].1);
+        debug_assert!(is_uniform, "layers in one pass disagreed on the erasure set");
+
+        if is_uniform {
+            let pattern = &layer_patterns[0].1;
+            let erased_count = layer_patterns[0].2;
+            let mut layers: Vec<usize> = layer_patterns.iter().map(|entry| entry.0).collect();
+            layers.sort_unstable();
+
+            let mut cursor = 0;
+            while cursor < layers.len() {
+                let start = layers[cursor];
+                let mut end = start;
+                while cursor + 1 < layers.len() && layers[cursor + 1] == end + 1 {
+                    cursor += 1;
+                    end = layers[cursor];
+                }
+                decode_uncoupled_layer(
+                    params,
+                    rs,
+                    pattern,
+                    erased_count,
+                    start,
+                    start * sub_chunk_size,
+                    (end - start + 1) * sub_chunk_size,
+                    &mut scratch.u_buf,
+                )?;
+                cursor += 1;
+            }
+        } else {
+            // Safety net: a pass that disagrees decodes layer by layer
+            for (z, pattern, erased) in &layer_patterns {
+                decode_uncoupled_layer(
+                    params,
+                    rs,
+                    pattern,
+                    *erased,
+                    *z,
+                    z * sub_chunk_size,
+                    sub_chunk_size,
+                    &mut scratch.u_buf,
+                )?;
+            }
+        }
+
+        // Mark reconstructed nodes as computed
+        for (z, pattern, _) in &layer_patterns {
+            for (node, &needed) in pattern.iter().enumerate() {
+                if needed {
+                    scratch.u_computed[node * alpha + z] = true;
+                }
+            }
         }
 
         // Second pass: recover C values from U values
@@ -291,16 +416,18 @@ pub fn decode_layered(
 }
 
 /// Decode erasures for a single layer with U tracking
-fn decode_layered_with_tracking(
+/// Phase 1 for one layer: recover every U the couplings allow, leaving the
+/// nodes that still need MDS in `scratch.needs_mds`. Returns that count so the
+/// caller can batch a whole pass's RS calls into one.
+fn compute_layer_u(
     params: &DecodeParams,
-    rs: &RsCodec,
     geometry: &LayerGeometry,
     is_erased: &[bool],
     z: usize,
     available_rows: &[Option<&[u8]>],
     scratch: &mut DecodeScratch,
     sub_chunk_size: usize,
-) -> Result<(), ClayError> {
+) -> Result<usize, ClayError> {
     let digits = geometry.plane_digits(z);
     let alpha = params.sub_chunk_no;
     let u_buf = &mut scratch.u_buf;
@@ -371,26 +498,7 @@ fn decode_layered_with_tracking(
         }
     }
 
-    // Decode uncoupled layer using MDS
-    decode_uncoupled_layer(
-        params,
-        rs,
-        &scratch.needs_mds,
-        mds_count,
-        z,
-        z * sub_chunk_size,
-        sub_chunk_size,
-        u_buf,
-    )?;
-
-    // Mark reconstructed nodes as computed
-    for (node, &needed) in scratch.needs_mds.iter().enumerate() {
-        if needed {
-            u_computed[node * alpha + z] = true;
-        }
-    }
-
-    Ok(())
+    Ok(mds_count)
 }
 
 /// Decode uncoupled layer using RS MDS code

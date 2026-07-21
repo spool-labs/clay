@@ -145,6 +145,38 @@ pub fn repair(
     helper_data: &HashMap<usize, Vec<u8>>,
     chunk_size: usize,
 ) -> Result<Vec<u8>, ClayError> {
+    let mut helpers: Vec<Option<&[u8]>> = vec![None; params.n];
+    for (&ext_idx, data) in helper_data.iter() {
+        if ext_idx >= params.n {
+            return Err(ClayError::InvalidParameters(format!(
+                "Helper index {} out of range [0, {})",
+                ext_idx, params.n
+            )));
+        }
+        helpers[ext_idx] = Some(data.as_slice());
+    }
+    repair_rows(params, rs, lost_node, &helpers, chunk_size)
+}
+
+/// Repair a lost chunk from helper partials indexed by node
+///
+/// The zero-copy form of repair. One slot per node, `None` where a node is not
+/// contributing, and each entry holds that helper's sub-chunks in the order
+/// minimum_to_repair returned them.
+pub fn repair_rows(
+    params: &RepairParams,
+    rs: &RsCodec,
+    lost_node: usize,
+    helpers: &[Option<&[u8]>],
+    chunk_size: usize,
+) -> Result<Vec<u8>, ClayError> {
+    if helpers.len() != params.n {
+        return Err(ClayError::InvalidParameters(format!(
+            "Expected {} helper slots (n), got {}",
+            params.n,
+            helpers.len()
+        )));
+    }
     let d = params.k + params.q - 1;
 
     if lost_node >= params.n {
@@ -154,10 +186,11 @@ pub fn repair(
         )));
     }
 
-    if helper_data.len() < d {
+    let helper_count = helpers.iter().filter(|slot| slot.is_some()).count();
+    if helper_count < d {
         return Err(ClayError::InsufficientHelpers {
             needed: d,
-            provided: helper_data.len(),
+            provided: helper_count,
         });
     }
 
@@ -197,7 +230,7 @@ pub fn repair(
         } else {
             node - params.nu
         };
-        if !helper_data.contains_key(&external_idx) {
+        if helpers[external_idx].is_none() {
             return Err(ClayError::MissingYSectionHelper {
                 lost_node,
                 missing_helper: external_idx,
@@ -222,13 +255,8 @@ pub fn repair(
     // Stage helper slices by internal node index and validate sizes
     let zero_data = vec![0u8; expected_helper_bytes];
     let mut helper_slices: Vec<Option<&[u8]>> = vec![None; total_nodes];
-    for (&ext_idx, data) in helper_data.iter() {
-        if ext_idx >= params.n {
-            return Err(ClayError::InvalidParameters(format!(
-                "Helper index {} out of range [0, {})",
-                ext_idx, params.n
-            )));
-        }
+    for (ext_idx, slot) in helpers.iter().enumerate() {
+        let Some(data) = slot else { continue };
         let internal = if ext_idx < params.k {
             ext_idx
         } else {
@@ -241,7 +269,7 @@ pub fn repair(
                 actual: data.len(),
             });
         }
-        helper_slices[internal] = Some(data.as_slice());
+        helper_slices[internal] = Some(data);
     }
 
     // Aloof nodes are neither helpers, the lost node, nor shortened
@@ -309,8 +337,20 @@ pub fn repair(
     // Per-plane erasure scratch, reset from the base set for every plane
     let mut layer_erased: Vec<bool> = vec![false; total_nodes];
 
+    // One entry per plane in the current pass: (z, position, erasure set, count).
+    // Phase 1 fills this for the whole pass so phase 2 can merge planes that
+    // agree on the erasure set into a single RS call.
+    let mut plane_patterns: Vec<(usize, usize, Vec<bool>, usize)> = Vec::with_capacity(beta);
+
     // Process planes in order of increasing intersection score
     for planes in &planes_by_iscore {
+        if planes.is_empty() {
+            continue;
+        }
+
+        // Phase 1 runs for every plane in the pass before any RS call, so the
+        // pass can then issue one merged call per contiguous run of planes
+        plane_patterns.clear();
         for &(z, position) in planes {
             let digits = geometry.plane_digits(z);
             let plane_offset = position * sub_chunk_size;
@@ -399,24 +439,72 @@ pub fn repair(
                 }
             }
 
-            // Phase 2: Decode uncoupled code to recover U for nodes we couldn't compute
-            decode_uncoupled_layer(
-                params,
-                rs,
-                &layer_erased,
-                layer_count,
-                z,
-                plane_offset,
-                sub_chunk_size,
-                &mut u_buf,
-            )?;
-            for (node, &erased) in layer_erased.iter().enumerate() {
+            plane_patterns.push((z, position, layer_erased.clone(), layer_count));
+        }
+
+        // Phase 2: recover U for the nodes we could not compute. Every plane in
+        // a pass is independent, and the pattern census shows they share one
+        // erasure set; since RS over GF(2^8) is byte-column independent, a
+        // contiguous run of planes decodes exactly as those planes would one at
+        // a time. Merging turns beta calls on tiny shards into one per run.
+        let is_uniform = plane_patterns.windows(2).all(|pair| pair[0].2 == pair[1].2);
+        debug_assert!(is_uniform, "planes in one pass disagreed on the erasure set");
+
+        if is_uniform {
+            let pattern = &plane_patterns[0].2;
+            let count = plane_patterns[0].3;
+            let z_first = plane_patterns[0].0;
+            let mut positions: Vec<usize> = plane_patterns.iter().map(|entry| entry.1).collect();
+            positions.sort_unstable();
+
+            let mut i = 0;
+            while i < positions.len() {
+                let start = positions[i];
+                let mut end = start;
+                while i + 1 < positions.len() && positions[i + 1] == end + 1 {
+                    i += 1;
+                    end = positions[i];
+                }
+                decode_uncoupled_layer(
+                    params,
+                    rs,
+                    pattern,
+                    count,
+                    z_first,
+                    start * sub_chunk_size,
+                    (end - start + 1) * sub_chunk_size,
+                    &mut u_buf,
+                )?;
+                i += 1;
+            }
+        } else {
+            // Safety net: a pass that disagrees decodes plane by plane
+            for (z, position, pattern, count) in &plane_patterns {
+                decode_uncoupled_layer(
+                    params,
+                    rs,
+                    pattern,
+                    *count,
+                    *z,
+                    position * sub_chunk_size,
+                    sub_chunk_size,
+                    &mut u_buf,
+                )?;
+            }
+        }
+
+        for (_, position, pattern, _) in &plane_patterns {
+            for (node, &erased) in pattern.iter().enumerate() {
                 if erased {
                     u_computed[node * beta + position] = true;
                 }
             }
+        }
 
-            // Phase 3: Compute C values for the lost node
+        // Phase 3: Compute C values for the lost node
+        for &(z, position) in planes {
+            let digits = geometry.plane_digits(z);
+            let plane_offset = position * sub_chunk_size;
             for &node in &base_erasure_nodes {
                 if is_aloof[node] {
                     continue;
