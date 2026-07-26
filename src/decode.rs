@@ -19,9 +19,78 @@ pub type DecodeParams = EncodeParams;
 /// The GF(2^8) Reed-Solomon codec shared across all layers
 pub type RsCodec = ReedSolomon;
 
+/// Bytes each node row starts past the one before it
+///
+/// Rows of one size all begin on a page boundary, so the same offset in every
+/// row lands on the same cache set. Every layer then drives one stream per node
+/// into that set, and encode runs 2x to 3x slower. Starting each row at its own
+/// offset inside an over-allocated buffer spreads them out. The cost is
+/// `SET_SKEW * n(n-1)/2` bytes, tens of kilobytes at any real node count.
+const SET_SKEW: usize = 320;
+
+/// Per-node working rows, each offset so no two share a cache set
+///
+/// The offset lives here rather than at the call sites: every access goes
+/// through `row`, `row_mut` or `pair_mut`, so no caller can forget it and read
+/// into the padding.
+pub struct NodeRows {
+    rows: Vec<Vec<u8>>,
+    row_len: usize,
+}
+
+impl NodeRows {
+    pub fn new(nodes: usize, row_len: usize) -> Self {
+        let rows = (0..nodes)
+            .map(|node| vec![0u8; row_len + node * SET_SKEW])
+            .collect();
+        Self { rows, row_len }
+    }
+
+    #[inline]
+    fn base(node: usize) -> usize {
+        node * SET_SKEW
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    #[inline]
+    pub fn row(&self, node: usize) -> &[u8] {
+        &self.rows[node][Self::base(node)..][..self.row_len]
+    }
+
+    #[inline]
+    pub fn row_mut(&mut self, node: usize) -> &mut [u8] {
+        let (base, len) = (Self::base(node), self.row_len);
+        &mut self.rows[node][base..][..len]
+    }
+
+    /// Two rows at once, for the transforms that read one and write the other.
+    pub fn pair_mut(&mut self, first: usize, second: usize) -> (&mut [u8], &mut [u8]) {
+        debug_assert_ne!(first, second);
+        let len = self.row_len;
+        let (a, b) = pair_mut(&mut self.rows, first, second);
+        (
+            &mut a[Self::base(first)..][..len],
+            &mut b[Self::base(second)..][..len],
+        )
+    }
+
+    /// Every row's usable window, in node order.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut [u8]> {
+        let len = self.row_len;
+        self.rows
+            .iter_mut()
+            .enumerate()
+            .map(move |(node, row)| &mut row[Self::base(node)..][..len])
+    }
+}
+
 /// Scratch buffers shared by every layer of one decode call
 struct DecodeScratch {
-    u_buf: Vec<Vec<u8>>,
+    u_buf: NodeRows,
     u_computed: Vec<bool>,
     needs_mds: Vec<bool>,
 }
@@ -266,7 +335,7 @@ pub fn decode_layered(
 
     let chunk_size = sub_chunk_size * alpha;
     let mut scratch = DecodeScratch {
-        u_buf: vec![vec![0u8; chunk_size]; total_nodes],
+        u_buf: NodeRows::new(total_nodes, chunk_size),
         u_computed: vec![false; total_nodes * alpha],
         needs_mds: vec![false; total_nodes],
     };
@@ -385,14 +454,14 @@ pub fn decode_layered(
                     if let Some(c_sw_row) = available_rows[node_sw] {
                         // Type 1: companion is not erased, its C pins down ours
                         compute_c_into(
-                            &scratch.u_buf[node_xy][offset_z..offset_z + sub_chunk_size],
+                            &scratch.u_buf.row(node_xy)[offset_z..offset_z + sub_chunk_size],
                             &c_sw_row[offset_zsw..offset_zsw + sub_chunk_size],
                             &mut erased_rows[node_xy][offset_z..offset_z + sub_chunk_size],
                         );
                     } else if z_y < x {
                         // Both erased, run the forward transform once per pair
-                        let u_xy = &scratch.u_buf[node_xy][offset_z..offset_z + sub_chunk_size];
-                        let u_sw = &scratch.u_buf[node_sw][offset_zsw..offset_zsw + sub_chunk_size];
+                        let u_xy = &scratch.u_buf.row(node_xy)[offset_z..offset_z + sub_chunk_size];
+                        let u_sw = &scratch.u_buf.row(node_sw)[offset_zsw..offset_zsw + sub_chunk_size];
 
                         let (c_xy_row, c_sw_row) = pair_mut(erased_rows, node_xy, node_sw);
                         pft_into(
@@ -405,7 +474,7 @@ pub fn decode_layered(
                 } else {
                     // Red vertex: C = U
                     erased_rows[node_xy][offset_z..offset_z + sub_chunk_size].copy_from_slice(
-                        &scratch.u_buf[node_xy][offset_z..offset_z + sub_chunk_size],
+                        &scratch.u_buf.row(node_xy)[offset_z..offset_z + sub_chunk_size],
                     );
                 }
             }
@@ -461,7 +530,7 @@ fn compute_layer_u(
 
             if z_y == x {
                 // Red vertex: U = C (no companion needed)
-                u_buf[node_xy][offset_z..offset_z + sub_chunk_size]
+                u_buf.row_mut(node_xy)[offset_z..offset_z + sub_chunk_size]
                     .copy_from_slice(&c_row[offset_z..offset_z + sub_chunk_size]);
                 u_computed[node_xy * alpha + z] = true;
             } else if let Some(c_sw_row) = available_rows[node_sw] {
@@ -470,7 +539,7 @@ fn compute_layer_u(
                     let c_xy = &c_row[offset_z..offset_z + sub_chunk_size];
                     let c_sw = &c_sw_row[offset_zsw..offset_zsw + sub_chunk_size];
 
-                    let (u_xy_buf, u_sw_buf) = pair_mut(u_buf, node_xy, node_sw);
+                    let (u_xy_buf, u_sw_buf) = u_buf.pair_mut(node_xy, node_sw);
                     prt_into(
                         c_xy,
                         c_sw,
@@ -483,7 +552,7 @@ fn compute_layer_u(
             } else if u_computed[node_sw * alpha + z_sw] {
                 // Companion is erased but its U* is known from an earlier
                 // layer: U = det*C + gamma*U*
-                let (u_xy_buf, u_sw_buf) = pair_mut(u_buf, node_xy, node_sw);
+                let (u_xy_buf, u_sw_buf) = u_buf.pair_mut(node_xy, node_sw);
                 compute_u_into(
                     &c_row[offset_z..offset_z + sub_chunk_size],
                     &u_sw_buf[offset_zsw..offset_zsw + sub_chunk_size],
@@ -513,7 +582,7 @@ pub fn decode_uncoupled_layer(
     z: usize,
     offset: usize,
     sub_chunk_size: usize,
-    u_buf: &mut [Vec<u8>],
+    u_buf: &mut NodeRows,
 ) -> Result<(), ClayError> {
     let parity_start = params.original_count; // k + nu
 
