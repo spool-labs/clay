@@ -20,27 +20,12 @@ pub type DecodeParams = EncodeParams;
 pub type RsCodec = ReedSolomon;
 
 /// Bytes each node row starts past the one before it
-///
-/// Rows of one size all begin on a page boundary, so the same offset in every
-/// row lands on the same cache set. Every layer then drives one stream per node
-/// into that set, and encode runs 2x to 3x slower. Starting each row at its own
-/// offset inside an over-allocated buffer spreads them out. The cost is
-/// `SET_SKEW * n(n-1)/2` bytes, tens of kilobytes at any real node count.
 const SET_SKEW: usize = 320;
 
 /// Rows shorter than this are left packed
-///
-/// Aliasing needs the rows to land on separate pages, which only happens once a
-/// row is page-sized. Below that the allocator packs them and the padding is
-/// pure overhead: at twenty nodes it adds 60 KB, which costs 10 to 15 percent
-/// on a payload of a few KB.
 const SKEW_MIN_ROW: usize = 4 * 1024;
 
 /// Per-node working rows, each offset so no two share a cache set
-///
-/// The offset lives here rather than at the call sites: every access goes
-/// through `row`, `row_mut` or `pair_mut`, so no caller can forget it and read
-/// into the padding.
 pub struct NodeRows {
     rows: Vec<Vec<u8>>,
     row_len: usize,
