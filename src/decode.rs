@@ -28,6 +28,14 @@ pub type RsCodec = ReedSolomon;
 /// `SET_SKEW * n(n-1)/2` bytes, tens of kilobytes at any real node count.
 const SET_SKEW: usize = 320;
 
+/// Rows shorter than this are left packed
+///
+/// Aliasing needs the rows to land on separate pages, which only happens once a
+/// row is page-sized. Below that the allocator packs them and the padding is
+/// pure overhead: at twenty nodes it adds 60 KB, which costs 10 to 15 percent
+/// on a payload of a few KB.
+const SKEW_MIN_ROW: usize = 4 * 1024;
+
 /// Per-node working rows, each offset so no two share a cache set
 ///
 /// The offset lives here rather than at the call sites: every access goes
@@ -36,19 +44,21 @@ const SET_SKEW: usize = 320;
 pub struct NodeRows {
     rows: Vec<Vec<u8>>,
     row_len: usize,
+    skew: usize,
 }
 
 impl NodeRows {
     pub fn new(nodes: usize, row_len: usize) -> Self {
+        let skew = if row_len >= SKEW_MIN_ROW { SET_SKEW } else { 0 };
         let rows = (0..nodes)
-            .map(|node| vec![0u8; row_len + node * SET_SKEW])
+            .map(|node| vec![0u8; row_len + node * skew])
             .collect();
-        Self { rows, row_len }
+        Self { rows, row_len, skew }
     }
 
     #[inline]
-    fn base(node: usize) -> usize {
-        node * SET_SKEW
+    fn base(&self, node: usize) -> usize {
+        node * self.skew
     }
 
     #[inline]
@@ -58,33 +68,30 @@ impl NodeRows {
 
     #[inline]
     pub fn row(&self, node: usize) -> &[u8] {
-        &self.rows[node][Self::base(node)..][..self.row_len]
+        &self.rows[node][self.base(node)..][..self.row_len]
     }
 
     #[inline]
     pub fn row_mut(&mut self, node: usize) -> &mut [u8] {
-        let (base, len) = (Self::base(node), self.row_len);
+        let (base, len) = (self.base(node), self.row_len);
         &mut self.rows[node][base..][..len]
     }
 
     /// Two rows at once, for the transforms that read one and write the other.
     pub fn pair_mut(&mut self, first: usize, second: usize) -> (&mut [u8], &mut [u8]) {
         debug_assert_ne!(first, second);
-        let len = self.row_len;
+        let (len, skew) = (self.row_len, self.skew);
         let (a, b) = pair_mut(&mut self.rows, first, second);
-        (
-            &mut a[Self::base(first)..][..len],
-            &mut b[Self::base(second)..][..len],
-        )
+        (&mut a[first * skew..][..len], &mut b[second * skew..][..len])
     }
 
     /// Every row's usable window, in node order.
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut [u8]> {
-        let len = self.row_len;
+        let (len, skew) = (self.row_len, self.skew);
         self.rows
             .iter_mut()
             .enumerate()
-            .map(move |(node, row)| &mut row[Self::base(node)..][..len])
+            .map(move |(node, row)| &mut row[node * skew..][..len])
     }
 }
 
