@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use crate::checked_pow;
 use crate::coords::LayerGeometry;
-use crate::decode::{decode_uncoupled_layer, pair_mut, DecodeParams, RsCodec};
+use crate::decode::{decode_uncoupled_layer, DecodeParams, NodeRows, RsCodec};
 use crate::error::ClayError;
 use crate::transforms::{compute_cstar_into, compute_u_into, prt_into};
 
@@ -244,7 +244,7 @@ pub fn repair_rows(
     // repair planes too), so the U scratch is packed densely by plane position
     // instead of being allocated for all alpha layers
     let beta = repair_sub_chunk_indices.len();
-    let mut u_buf: Vec<Vec<u8>> = vec![vec![0u8; beta * sub_chunk_size]; total_nodes];
+    let mut u_buf = NodeRows::new(total_nodes, beta * sub_chunk_size);
 
     // Track which U values have been computed (for dependency checking)
     let mut u_computed: Vec<bool> = vec![false; total_nodes * beta];
@@ -384,7 +384,7 @@ pub fn repair_rows(
 
                     if z_y == x {
                         // Red vertex: U = C
-                        u_buf[node_xy][plane_offset..plane_offset + sub_chunk_size]
+                        u_buf.row_mut(node_xy)[plane_offset..plane_offset + sub_chunk_size]
                             .copy_from_slice(
                                 &helper_chunk[plane_offset..plane_offset + sub_chunk_size],
                             );
@@ -397,7 +397,7 @@ pub fn repair_rows(
                                     &helper_chunk[plane_offset..plane_offset + sub_chunk_size];
                                 let sw_offset = sw_position * sub_chunk_size;
 
-                                let (u_xy_buf, u_sw_buf) = pair_mut(&mut u_buf, node_xy, node_sw);
+                                let (u_xy_buf, u_sw_buf) = u_buf.pair_mut(node_xy, node_sw);
                                 compute_u_into(
                                     c_xy,
                                     &u_sw_buf[sw_offset..sw_offset + sub_chunk_size],
@@ -419,7 +419,7 @@ pub fn repair_rows(
                         let c_xy = &helper_chunk[plane_offset..plane_offset + sub_chunk_size];
                         let c_sw = &helper_sw[sw_offset..sw_offset + sub_chunk_size];
 
-                        let (u_xy_buf, u_sw_buf) = pair_mut(&mut u_buf, node_xy, node_sw);
+                        let (u_xy_buf, u_sw_buf) = u_buf.pair_mut(node_xy, node_sw);
                         let u_xy = &mut u_xy_buf[plane_offset..plane_offset + sub_chunk_size];
                         let u_sw = &mut u_sw_buf[sw_offset..sw_offset + sub_chunk_size];
 
@@ -520,14 +520,14 @@ pub fn repair_rows(
                     // Red vertex: C = U
                     if node == lost_internal {
                         recovered[z * sub_chunk_size..(z + 1) * sub_chunk_size].copy_from_slice(
-                            &u_buf[node][plane_offset..plane_offset + sub_chunk_size],
+                            &u_buf.row(node)[plane_offset..plane_offset + sub_chunk_size],
                         );
                     }
                 } else if node_sw == lost_internal {
                     // node is a helper in y-section, its companion is the lost node
                     if let Some(helper_chunk) = helper_slices[node] {
                         let c_node = &helper_chunk[plane_offset..plane_offset + sub_chunk_size];
-                        let u_node = &u_buf[node][plane_offset..plane_offset + sub_chunk_size];
+                        let u_node = &u_buf.row(node)[plane_offset..plane_offset + sub_chunk_size];
 
                         // The helper's C and U pin down the lost node's C at z_sw
                         compute_cstar_into(
