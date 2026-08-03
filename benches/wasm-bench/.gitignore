@@ -1,0 +1,3 @@
+target
+# Shelby's shipped artifact, fetched with npm pack (see run.mjs header)
+*.wasm

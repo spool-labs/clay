@@ -1,0 +1,25 @@
+# wasm32 simd128 bench module for clay-codes, built as a raw C-ABI cdylib so it
+# loads exactly the way @shelby-protocol/clay-codes'.
+#
+#   RUSTFLAGS="-C target-feature=+simd128" \
+#     cargo build --release --target wasm32-unknown-unknown
+#
+# then: node run.mjs
+[package]
+name = "clay-wasm-bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+clay-codes = { path = "../.." }
+
+[profile.release]
+opt-level = 3
+lto = true
+panic = "abort"
+
+[workspace]

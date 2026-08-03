@@ -20,6 +20,8 @@ const CONFIGS: &[(usize, usize, usize)] = &[
     (6, 3, 8),    // (n,k,d)=(9,6,8)    RS(6,3)   fused-matrix
     (10, 4, 13),  // (n,k,d)=(14,10,13) RS(12,4)  fused-matrix
     (7, 13, 16),  // (n,k,d)=(20,7,16)  RS(7,13)  fft-generated (production shape)
+    (10, 6, 13),  // (n,k,d)=(16,10,13) RS(10,6)  fused-matrix — Shelby's shape,
+                  // the one config Ceph's plugin and Shelby's wasm can both run
 ];
 
 /// Data sizes to test (in bytes)
