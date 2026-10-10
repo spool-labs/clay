@@ -103,8 +103,18 @@ checksum = "c3e64b0cc0439b12df2fa678eae89a1c56a529fd067a9115f7827f1fffd22b32"
 name = "clay-codes"
 version = "0.2.2"
 dependencies = [
+ "clay-codes 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "criterion",
  "rand",
+ "tape-reed-solomon",
+]
+
+[[package]]
+name = "clay-codes"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "025604490be7569adf8e0da6194d98af196f6226999646a40ee23d09933efc52"
+dependencies = [
  "tape-reed-solomon",
 ]
 

@@ -305,11 +305,11 @@ pub fn decode_rows(
 /// when its slot in `available_rows` is `None`; recovered chunks are written
 /// into the matching slot of `erased_rows`, which must hold a chunk-sized
 /// buffer for every erased node.
-pub fn decode_layered(
+pub fn decode_layered<Row: AsMut<[u8]>>(
     params: &DecodeParams,
     rs: &RsCodec,
     available_rows: &[Option<&[u8]>],
-    erased_rows: &mut [Vec<u8>],
+    erased_rows: &mut [Row],
     sub_chunk_size: usize,
 ) -> Result<(), ClayError> {
     let total_nodes = params.q * params.t;
@@ -448,7 +448,7 @@ pub fn decode_layered(
                         compute_c_into(
                             &scratch.u_buf.row(node_xy)[offset_z..offset_z + sub_chunk_size],
                             &c_sw_row[offset_zsw..offset_zsw + sub_chunk_size],
-                            &mut erased_rows[node_xy][offset_z..offset_z + sub_chunk_size],
+                            &mut erased_rows[node_xy].as_mut()[offset_z..offset_z + sub_chunk_size],
                         );
                     } else if z_y < x {
                         // Both erased, run the forward transform once per pair
@@ -459,13 +459,13 @@ pub fn decode_layered(
                         pft_into(
                             u_xy,
                             u_sw,
-                            &mut c_xy_row[offset_z..offset_z + sub_chunk_size],
-                            &mut c_sw_row[offset_zsw..offset_zsw + sub_chunk_size],
+                            &mut c_xy_row.as_mut()[offset_z..offset_z + sub_chunk_size],
+                            &mut c_sw_row.as_mut()[offset_zsw..offset_zsw + sub_chunk_size],
                         );
                     }
                 } else {
                     // Red vertex: C = U
-                    erased_rows[node_xy][offset_z..offset_z + sub_chunk_size].copy_from_slice(
+                    erased_rows[node_xy].as_mut()[offset_z..offset_z + sub_chunk_size].copy_from_slice(
                         &scratch.u_buf.row(node_xy)[offset_z..offset_z + sub_chunk_size],
                     );
                 }
@@ -625,11 +625,7 @@ pub fn decode_uncoupled_layer(
 /// Split two mutable node buffers out of the same slice
 ///
 /// The coupled pair always names two distinct nodes, so the split is safe.
-pub fn pair_mut(
-    buffers: &mut [Vec<u8>],
-    first: usize,
-    second: usize,
-) -> (&mut Vec<u8>, &mut Vec<u8>) {
+pub fn pair_mut<Row>(buffers: &mut [Row], first: usize, second: usize) -> (&mut Row, &mut Row) {
     debug_assert_ne!(first, second);
     if first < second {
         let (left, right) = buffers.split_at_mut(second);

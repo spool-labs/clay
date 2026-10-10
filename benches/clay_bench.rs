@@ -63,6 +63,36 @@ fn bench_encode(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_encode_into(c: &mut Criterion) {
+    let mut group = c.benchmark_group("encode_into");
+
+    for &(k, m, d) in CONFIGS {
+        let clay = ClayCode::new(k, m, d).unwrap();
+        let config_name = format!("({},{},{})", clay.n, clay.k, clay.d);
+
+        for &size in DATA_SIZES {
+            let data = generate_data(size, 42);
+            let mut chunks = vec![vec![0u8; clay.chunk_size(size)]; clay.n];
+
+            group.throughput(Throughput::Bytes(size as u64));
+            group.bench_with_input(
+                BenchmarkId::new(&config_name, format_size(size)),
+                &data,
+                |b, data| {
+                    b.iter(|| {
+                        let mut rows: Vec<&mut [u8]> =
+                            chunks.iter_mut().map(|chunk| chunk.as_mut_slice()).collect();
+                        clay.encode_into(data, &mut rows).unwrap();
+                        black_box(&rows);
+                    });
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
 fn bench_decode(c: &mut Criterion) {
     let mut group = c.benchmark_group("decode");
 
@@ -226,6 +256,7 @@ criterion_group!(
     benches,
     bench_metrics_report,
     bench_encode,
+    bench_encode_into,
     bench_decode,
     bench_repair,
 );

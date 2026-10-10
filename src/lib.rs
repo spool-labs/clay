@@ -51,7 +51,7 @@ pub use error::ClayError;
 const MAX_RS_SHARDS: usize = 32768;
 
 use decode::{decode as decode_chunks, decode_rows as decode_rows_impl, RsCodec};
-use encode::encode as encode_chunks;
+use encode::{chunk_size as encoded_chunk_size, encode as encode_chunks, encode_into as encode_chunks_into};
 use repair::{minimum_to_repair as min_repair, repair as repair_chunk, repair_rows as repair_rows_impl};
 
 /// Clay (Coupled-Layer) erasure code
@@ -177,6 +177,20 @@ impl ClayCode {
     /// Vector of n chunks, each containing α sub-chunks
     pub fn encode(&self, data: &[u8]) -> Vec<Vec<u8>> {
         encode_chunks(&self.encode_params(), &self.rs, data)
+    }
+
+    /// Bytes in each chunk an encode of `data_len` bytes produces
+    pub fn chunk_size(&self, data_len: usize) -> usize {
+        encoded_chunk_size(&self.encode_params(), data_len)
+    }
+
+    /// Encode data into n caller-owned chunks of `chunk_size(data.len())` bytes each
+    ///
+    /// The allocation-free form of encode: the data goes straight into the
+    /// first k chunks and the parity into the last m, so a caller that encodes
+    /// into its own buffers holds no second copy of the coded bytes.
+    pub fn encode_into(&self, data: &[u8], chunks: &mut [&mut [u8]]) -> Result<(), ClayError> {
+        encode_chunks_into(&self.encode_params(), &self.rs, data, chunks)
     }
 
     /// Decode data from available chunks

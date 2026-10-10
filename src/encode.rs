@@ -3,6 +3,7 @@
 //! This module handles encoding data into Clay code chunks.
 
 use crate::decode::{decode_layered, RsCodec};
+use crate::error::ClayError;
 
 /// Parameters needed for encoding
 pub struct EncodeParams {
@@ -16,6 +17,21 @@ pub struct EncodeParams {
     pub original_count: usize,
 }
 
+/// Bytes in each chunk an encode of `data_len` bytes produces
+///
+/// The 2-byte sub-chunk floor sets the padded length and therefore the
+/// encoded layout, so it is part of the wire format and must not change.
+pub fn chunk_size(params: &EncodeParams, data_len: usize) -> usize {
+    let min_sub_chunk_size = 2;
+    let min_size = params.k * params.sub_chunk_no * min_sub_chunk_size;
+    let padded_len = if data_len == 0 {
+        min_size
+    } else {
+        data_len.div_ceil(min_size) * min_size
+    };
+    padded_len / params.k
+}
+
 /// Encode data into n chunks
 ///
 /// # Parameters
@@ -26,69 +42,79 @@ pub struct EncodeParams {
 /// # Returns
 /// Vector of n chunks, each containing alpha sub-chunks
 pub fn encode(params: &EncodeParams, rs: &RsCodec, data: &[u8]) -> Vec<Vec<u8>> {
-    // Calculate chunk size: must be divisible by (k * sub_chunk_no)
-    // The 2-byte sub-chunk floor sets the padded length and therefore the
-    // encoded layout, so it is part of the wire format and must not change.
-    let min_sub_chunk_size = 2;
-    let min_size = params.k * params.sub_chunk_no * min_sub_chunk_size;
-    let padded_len = if data.is_empty() {
-        min_size
-    } else {
-        let aligned = ((data.len() + min_size - 1) / min_size) * min_size;
-        aligned.max(min_size)
-    };
-    let chunk_size = padded_len / params.k;
-    let sub_chunk_size = chunk_size / params.sub_chunk_no;
+    let size = chunk_size(params, data.len());
+    let mut chunks: Vec<Vec<u8>> = vec![vec![0u8; size]; params.n];
+    let mut rows: Vec<&mut [u8]> = chunks.iter_mut().map(|chunk| chunk.as_mut_slice()).collect();
+    // The rows are n buffers of the size encode_into asks for, so it cannot refuse them
+    encode_into(params, rs, data, &mut rows).expect("Encode failed: this indicates a bug in ClayCode");
+    chunks
+}
 
+/// Encode data into n caller-owned chunks of `chunk_size(params, data.len())` bytes each
+///
+/// The first k chunks take the data with its zero padding, the last m take the
+/// parity. Every byte of every chunk is written, so the buffers may hold
+/// anything on the way in.
+pub fn encode_into(
+    params: &EncodeParams,
+    rs: &RsCodec,
+    data: &[u8],
+    chunks: &mut [&mut [u8]],
+) -> Result<(), ClayError> {
+    let size = chunk_size(params, data.len());
+    if chunks.len() != params.n {
+        return Err(ClayError::InvalidParameters(format!(
+            "encode needs {} chunks, got {}",
+            params.n,
+            chunks.len()
+        )));
+    }
+    for chunk in chunks.iter() {
+        if chunk.len() != size {
+            return Err(ClayError::InvalidChunkSize {
+                expected: size,
+                actual: chunk.len(),
+            });
+        }
+    }
+    let sub_chunk_size = size / params.sub_chunk_no;
     let total_nodes = params.q * params.t; // k + m + nu
     let parity_start = params.k + params.nu;
 
-    // Owned data rows for the first k nodes; the zeroed tail is the padding
-    let mut data_rows: Vec<Vec<u8>> = vec![vec![0u8; chunk_size]; params.k];
-    for i in 0..params.k {
-        let start = i * chunk_size;
-        if start >= data.len() {
-            break;
-        }
-        let end = data.len().min(start + chunk_size);
-        data_rows[i][..end - start].copy_from_slice(&data[start..end]);
+    // The data goes straight into the first k chunks; the zeroed tail is the padding
+    let (data_chunks, parity_chunks) = chunks.split_at_mut(params.k);
+    for (index, row) in data_chunks.iter_mut().enumerate() {
+        let start = (index * size).min(data.len());
+        let end = (start + size).min(data.len());
+        row[..end - start].copy_from_slice(&data[start..end]);
+        row[end - start..].fill(0);
     }
 
     // Data rows are available, shortened nodes share one known-zero row, and
     // parity rows are left as erasures for the layered decoder to fill in
-    let zero_row = vec![0u8; chunk_size];
+    let zero_row = match params.nu {
+        0 => Vec::new(),
+        _ => vec![0u8; size],
+    };
     let mut available_rows: Vec<Option<&[u8]>> = vec![None; total_nodes];
-    for i in 0..params.k {
-        available_rows[i] = Some(&data_rows[i]);
+    for (index, row) in data_chunks.iter().enumerate() {
+        available_rows[index] = Some(&**row);
     }
-    for i in params.k..parity_start {
-        available_rows[i] = Some(&zero_row);
+    for row in available_rows.iter_mut().take(parity_start).skip(params.k) {
+        *row = Some(&zero_row);
     }
 
-    let mut erased_rows: Vec<Vec<u8>> = Vec::with_capacity(total_nodes);
-    for node in 0..total_nodes {
-        if node < parity_start {
-            erased_rows.push(Vec::new());
-        } else {
-            erased_rows.push(vec![0u8; chunk_size]);
-        }
+    let mut erased_rows: Vec<&mut [u8]> = Vec::with_capacity(total_nodes);
+    for _ in 0..parity_start {
+        erased_rows.push(&mut []);
+    }
+    for row in parity_chunks.iter_mut() {
+        row.fill(0);
+        erased_rows.push(&mut **row);
     }
 
     // Encode by treating parity computation as recovery
-    // This should never fail for valid parameters (parity count = m <= m)
     decode_layered(params, rs, &available_rows, &mut erased_rows, sub_chunk_size)
-        .expect("Encode failed: this indicates a bug in ClayCode");
-
-    // Return the k data + m parity chunks (shortened nodes stay internal)
-    let mut result = Vec::with_capacity(params.n);
-    for row in data_rows {
-        result.push(row);
-    }
-    for node in parity_start..total_nodes {
-        result.push(std::mem::take(&mut erased_rows[node]));
-    }
-
-    result
 }
 
 #[cfg(test)]

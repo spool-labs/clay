@@ -25,6 +25,7 @@ gfni = ["tape-reed-solomon/gfni"]
 neon = ["tape-reed-solomon/neon"]
 
 [dev-dependencies]
+clay_published = { package = "clay-codes", version = "=0.2.2" }
 rand = "0.8"
 criterion = "0.5"
 
